@@ -25,7 +25,7 @@ export interface Config {
   patternsDir: string;
   /** Workbench NET API host (default 127.0.0.1) */
   workbenchHost: string;
-  /** Workbench NET API port (default 5775) */
+  /** Workbench NET API port (default 5780) */
   workbenchPort: number;
   /** Default addon folder name used when modName is not specified in tool calls.
    *  Automatically set at runtime when wb_launch opens a .gproj file.
@@ -54,7 +54,7 @@ const DEFAULTS: Config = {
     "patterns"
   ),
   workbenchHost: "127.0.0.1",
-  workbenchPort: 5775,
+  workbenchPort: 5780,
 };
 
 function loadJsonFile(path: string): Partial<Config> {

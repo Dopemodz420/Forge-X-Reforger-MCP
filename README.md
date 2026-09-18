@@ -292,7 +292,7 @@ Environment variables override config files:
 | `ENFUSION_PROJECT_PATH` | Mod output directory | `~/Documents/My Games/.../addons` |
 | `ENFUSION_EXPORT_PATH` | Unpacked game data export (optional, faster reads) | none |
 | `ENFUSION_WORKBENCH_HOST` | NET API host | `127.0.0.1` |
-| `ENFUSION_WORKBENCH_PORT` | NET API port | `5775` |
+| `ENFUSION_WORKBENCH_PORT` | NET API port | `5780` (verified — legacy `5775` if your Workbench still uses it) |
 | `REFORGER_FORGE_DEBUG` | Enable debug logging | off |
 
 Config file search order:
