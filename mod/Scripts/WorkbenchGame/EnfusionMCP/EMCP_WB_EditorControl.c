@@ -141,10 +141,41 @@ class EMCP_WB_EditorControl : NetApiHandler
 					resp.message = "SetOpenedResource returned false for: " + req.path;
 			}
 		}
+		else if (req.action == "close")
+		{
+			// Close current world — try multiple strategies for robustness across Workbench versions.
+			// Strategy 1: SetOpenedResource("") — clears opened resource
+			bool closed = worldEditor.SetOpenedResource("");
+			if (!closed)
+			{
+				// Strategy 2: ExecuteAction File -> Close
+				array<string> menuPath = {};
+				menuPath.Insert("File");
+				menuPath.Insert("Close");
+				closed = worldEditor.ExecuteAction(menuPath);
+			}
+			if (!closed)
+			{
+				// Strategy 3: try WorldEditorAPI close if available (via ExecuteAction Worlds -> Close)
+				WorldEditorAPI api = worldEditor.GetApi();
+				if (api)
+				{
+					array<string> menuPath2 = {};
+					menuPath2.Insert("File");
+					menuPath2.Insert("Close World");
+					closed = worldEditor.ExecuteAction(menuPath2);
+				}
+			}
+			resp.status = "ok";
+			if (closed)
+				resp.message = "Close world triggered";
+			else
+				resp.message = "Close world ExecuteAction returned false — world may already be closed or Workbench version differs; check wb_state";
+		}
 		else
 		{
 			resp.status = "error";
-			resp.message = "Unknown action: " + req.action + ". Valid: play, stop, save, saveAs, undo, redo, openResource";
+			resp.message = "Unknown action: " + req.action + ". Valid: play, stop, save, saveAs, undo, redo, openResource, close";
 		}
 
 		return resp;
