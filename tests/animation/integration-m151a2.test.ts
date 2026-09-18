@@ -1,5 +1,5 @@
 import { describe, it, expect } from "vitest";
-import { readFileSync } from "node:fs";
+import { readFileSync, existsSync } from "node:fs";
 import {
   parseAgrToStruct, parseAgfToStruct, parseAstToStruct,
   parseAsiToStruct, parseAwToStruct,
@@ -13,16 +13,21 @@ import { generateSuggestions, formatSuggestions } from "../../src/animation/sugg
 
 const BASE = "C:/Users/Steffen/Documents/My Games/ArmaReforgerWorkbench/profile/TESTANIM";
 
+// Skip entire suite on CI / machines without the local TESTANIM fixture
+const hasFixture = existsSync(`${BASE}/M151A2.agr`);
+
 function readFile(name: string): string {
   return readFileSync(`${BASE}/${name}`, "utf-8");
 }
 
-describe("M151A2 Integration", () => {
-  const agrContent = readFile("M151A2.agr");
-  const agfContent = readFile("M151A2.agf");
-  const astContent = readFile("M151A2.ast");
-  const asiContent = readFile("M151A2_vehicle.asi");
-  const awContent = readFile("Test.aw");
+describe.skipIf(!hasFixture)("M151A2 Integration", () => {
+  // Lazy-guarded reads — Vitest still evaluates the factory even when skipped,
+  // so we must not throw ENOENT at collection time.
+  const agrContent = hasFixture ? readFile("M151A2.agr") : "";
+  const agfContent = hasFixture ? readFile("M151A2.agf") : "";
+  const astContent = hasFixture ? readFile("M151A2.ast") : "";
+  const asiContent = hasFixture ? readFile("M151A2_vehicle.asi") : "";
+  const awContent = hasFixture ? readFile("Test.aw") : "";
 
   describe("AGR parsing", () => {
     const agr = parseAgrToStruct(agrContent);

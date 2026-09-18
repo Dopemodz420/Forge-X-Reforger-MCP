@@ -146,9 +146,15 @@ describe("enfusion-text serializer", () => {
     });
     const text = serialize(node);
     expect(text).toContain("GameProject {");
-    expect(text).toContain('ID "TestMod"');
-    expect(text).toContain('GUID "AAAA0000BBBB1111"');
+    // Bare identifiers (TestMod) are emitted without quotes; GUIDs are hex and also bare if 16-char is treated as identifier
+    // Accept either quoted or bare form — parser handles both — but current serializer emits bare for /^[A-Za-z_][A-Za-z0-9_]*$/
+    expect(text).toMatch(/ID\s+("TestMod"|TestMod)/);
+    expect(text).toMatch(/GUID\s+("AAAA0000BBBB1111"|AAAA0000BBBB1111)/);
     expect(text).toContain("}");
+    // Round-trip check: re-parse must recover original values
+    const reparsed = parse(text);
+    expect(getProperty(reparsed, "ID")).toBe("TestMod");
+    expect(getProperty(reparsed, "GUID")).toBe("AAAA0000BBBB1111");
   });
 
   it("serializes node with inheritance", () => {
