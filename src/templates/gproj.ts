@@ -37,10 +37,13 @@ export function generateGproj(opts: GprojOptions): string {
       createNode("Dependencies", {
         values: [...deps],
       }),
+      createNode("Modules", {
+        values: ["scripts"],
+      }),
     ],
   });
 
-  // Add platform configurations (Workbench handles script compilation automatically)
+  // Add platform configurations
   const pcConfig = createNode("GameProjectConfig", { id: "PC" });
   const headlessConfig = createNode("GameProjectConfig", { id: "HEADLESS" });
 

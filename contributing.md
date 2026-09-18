@@ -31,7 +31,7 @@ Supported agents: Cursor, Google Antigravity, Claude Desktop, Windsurf, VS Code 
 
 ## Reporting Issues
 
-Open an issue at https://github.com/goatboynz/reforger-forge-mcp/issues with:
+Open an issue at https://github.com/Dopemodz420/Forge-X-Reforger-MCP/issues with:
 
 - Your agent (Cursor, Claude, etc.)
 - Node.js version

@@ -1,24 +1,26 @@
-# ReforgerForge MCP
+# Forge-X Reforger MCP
 
-**The universal AI modding toolkit for Arma Reforger.**
+**The universal AI modding toolkit for Arma Reforger — Forge-X Edition.**
 
-Describe what you want to build — your AI agent handles API research, code generation, project scaffolding, Workbench control, and in-editor testing. Works with **any MCP-compatible agent**: Cursor, Google Antigravity, Claude Desktop, Claude Code, Kiro, Windsurf, VS Code Copilot, Continue.dev, and more.
+Describe what you want to build — your AI agent handles API research, code generation, project scaffolding, Workbench control, and in-editor testing. Works with **any MCP-compatible agent**: Cursor, Google Antigravity, Claude Desktop, Claude Code, Kiro, Windsurf, VS Code Copilot, Continue.dev, and OpenCode.
 
-> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) with permission. ReforgerForge adds universal agent support, simplified setup, and ongoing maintenance as an independent project.
+> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) and [wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp) with permission. Forge-X adds 14 new tools, Workbench bridge fix (`EMCP_WB_Ping`), export-VFS boost, and ongoing maintenance as an independent project.
 
 ## Features
 
-- **50 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control
+- **67 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control (53 → 67, +14 new: layout_validate, string_table, project_search/diff/references/stats/batch/export/template/migrate, prefab_diff, mod_compat, config_validate, project_scaffold_ui)
 - **8,693 indexed API classes** — full Enfusion/Arma Reforger class hierarchy
 - **250+ wiki guides** — searchable tutorials and documentation
 - **Agent-agnostic** — one server, install script for every major AI IDE
 - **Zero modding experience required** — natural language → built addon
+- **222k+ game files indexed** — full pak archive browsing, search, and reading
+- **Optional export boost** — 100x faster reads with unpacked game data
 
 ## Quick Start
 
 ```bash
-git clone https://github.com/goatboynz/reforger-forge-mcp.git
-cd reforger-forge-mcp
+git clone https://github.com/Dopemodz420/Forge-X-Reforger-MCP.git
+cd Forge-X-Reforger-MCP
 npm install
 npm run build
 ```
@@ -40,7 +42,7 @@ Then install into your agent(s):
 .\scripts\install-agents.ps1 -Agent cursor
 ```
 
-Restart your agent and verify **reforger-forge** shows **50 tools**.
+Restart your agent and verify **forge-x-reforger-mcp** (or `reforger-forge`) shows **67 tools**.
 
 ### Configure paths
 
@@ -159,7 +161,7 @@ Use the stdio template at `configs/agents/stdio-template.json`. Replace `REPLACE
 
 ---
 
-## Complete Tool Reference (50 tools)
+## Complete Tool Reference (67 tools)
 
 Legend: **Offline** = no Workbench needed | **Live** = requires Workbench running (`wb_launch`)
 
@@ -177,8 +179,11 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 
 | Tool | What it does |
 |------|-------------|
-| `game_browse` | Browse base game files (scripts, prefabs, configs) from loose files and `.pak` archives. Do not use filesystem tools on the game install directly. |
-| `game_read` | Read a specific base game file — vanilla `.c` scripts, `.et` prefabs, `.conf` configs from loose files or `.pak`. |
+| `game_browse` | Browse base game files (scripts, prefabs, configs) from loose files, `.pak` archives, and export directory. |
+| `game_read` | Read a specific base game file — vanilla `.c` scripts, `.et` prefabs, `.conf` configs, `.layout` UI files, `.imageset` atlases. Shows fuzzy "Did you mean?" suggestions on miss. |
+| `game_search` | Search game files by name pattern, class name, GUID, or content reference. Four modes: filename, class, guid, reference. |
+| `game_class_info` | Look up class hierarchy — parent chain, subclasses, file location. Scans all scripts across paks and export. |
+| `game_stats` | Diagnostic overview — file counts by type, pak files loaded, VFS index size, export directory status. |
 | `asset_search` | Search game assets (prefabs, models, textures, scripts, configs) by name across loose files and `.pak` archives. Returns paths and GUIDs. |
 | `game_duplicate` | Duplicate a base game prefab/config into your mod folder with full ancestor chain resolved. Optionally `flatten=true` to bake all inherited components. Registers with Workbench for a new GUID. |
 | `workshop_info` | Read Workshop metadata from a mod's `.gproj` — mod ID, GUID, title, dependencies, configurations. |
@@ -259,7 +264,7 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | `wb_script_editor` | Read/write lines in the open Script Editor file — get file, read/write/insert/remove lines, line count. |
 | `wb_validate` | Validate material or texture resources using Workbench built-in validators. Returns errors and warnings. |
 
-Run `node scripts/list-tools.mjs` anytime to verify all 50 tools register on your machine.
+Run `node scripts/list-tools.mjs` anytime to verify all 67 tools register on your machine.
 
 ---
 
@@ -285,6 +290,7 @@ Environment variables override config files:
 | `ENFUSION_WORKBENCH_PATH` | Arma Reforger Tools path | Steam default |
 | `ENFUSION_GAME_PATH` | Arma Reforger game path | Sibling of Tools |
 | `ENFUSION_PROJECT_PATH` | Mod output directory | `~/Documents/My Games/.../addons` |
+| `ENFUSION_EXPORT_PATH` | Unpacked game data export (optional, faster reads) | none |
 | `ENFUSION_WORKBENCH_HOST` | NET API host | `127.0.0.1` |
 | `ENFUSION_WORKBENCH_PORT` | NET API port | `5775` |
 | `REFORGER_FORGE_DEBUG` | Enable debug logging | off |
@@ -299,8 +305,71 @@ Config file search order:
 ## Requirements
 
 - **Node.js 20+**
-- **Arma Reforger Tools** (Steam) — for `mod` build and all `wb_*` tools
-- **Arma Reforger** (Steam) — for game asset browsing
+- **Arma Reforger** (Steam) — for game asset browsing (222k+ files indexed from `.pak`)
+- **Arma Reforger Tools** (Steam) — for `mod` build and all `wb_*` tools (optional for read-only use)
+
+### Optional: Export Directory
+
+For faster file reads, you can use an unpacked game data export from [ReforgerPakTool](https://github.com/user/ReforgerPakTool). This indexes 106k+ files as plain text on disk (1ms reads vs ~100ms from pak decompression).
+
+```bash
+# Set in config or environment
+ENFUSION_EXPORT_PATH=D:\path\to\Enfusion-Export-MCPINFO
+```
+
+Without the export, everything works perfectly — the tool falls back to reading from `.pak` archives automatically.
+
+---
+
+## Sharing & Distribution
+
+### For Friends (Quick Setup)
+
+1. **Clone or zip** the `reforger-forge-mcp` folder
+2. Send it to your friend (or push to GitHub)
+3. Friend runs:
+
+```powershell
+cd reforger-forge-mcp
+.\scripts\setup.ps1
+```
+
+The setup script will:
+- Auto-detect Arma Reforger install paths (Steam, Epic)
+- Create config with correct paths
+- Install dependencies and build
+- Optionally install into their AI agent
+
+### For GitHub Distribution
+
+```bash
+git remote add origin https://github.com/Dopemodz420/Forge-X-Reforger-MCP.git
+git push -u origin main
+```
+
+Friends can then:
+
+```bash
+git clone https://github.com/Dopemodz420/Forge-X-Reforger-MCP.git
+cd Forge-X-Reforger-MCP
+.\scripts\setup.ps1    # Windows
+# or
+npm install && npm run build && node scripts/list-tools.mjs
+```
+
+### What's Included
+
+- All source code, build scripts, and agent configs
+- 8,693 indexed API classes (in `data/`)
+- 250+ wiki pages (in `data/`)
+- Workbench handler scripts (in `mod/`)
+- Agent install scripts for 7+ AI IDEs
+
+### What's NOT Included (User Must Have)
+
+- Arma Reforger game installation (provides `.pak` archives)
+- Arma Reforger Tools (optional, for Workbench control)
+- Export directory (optional, for faster reads)
 
 ---
 
@@ -308,9 +377,9 @@ Config file search order:
 
 ```bash
 npm run build                  # Compile TypeScript
-npm test                       # Run test suite (446 tests)
+npm test                       # Run test suite (450/453, 3 pre-existing fails)
 npm run dev                    # Run server in dev mode
-node scripts/list-tools.mjs    # Verify all 50 tools register
+node scripts/list-tools.mjs    # Verify all 67 tools register
 .\scripts\install-agents.ps1 -All   # Push config to all agents
 ```
 
@@ -335,18 +404,19 @@ reforger-forge-mcp/
 ## Publishing to GitHub
 
 ```bash
-git remote add origin https://github.com/goatboynz/reforger-forge-mcp.git
+git remote add origin https://github.com/Dopemodz420/Forge-X-Reforger-MCP.git
 git push -u origin main
 ```
 
 ## Credits & Attribution
 
-ReforgerForge MCP is based on:
+**Forge-X Reforger MCP** is based on:
 
 - **[steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK)** — primary upstream fork
+- **[wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp)** — prior fork
 - **[Articulated7/enfusion-mcp](https://github.com/Articulated7/enfusion-mcp)** — original project
 
-Used and modified with permission. MIT licensed.
+Forge-X rebrand by [Dopemodz420](https://github.com/Dopemodz420). Used and modified with permission. MIT licensed.
 
 ## License
 

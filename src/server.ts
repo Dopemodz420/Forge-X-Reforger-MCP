@@ -6,8 +6,10 @@ import { registerWikiRead } from "./tools/wiki-read.js";
 import { registerProject } from "./tools/project.js";
 import { registerScriptCreate } from "./tools/script-create.js";
 import { registerPrefab } from "./tools/prefab.js";
+import { registerPrefabDiff } from "./tools/prefab-diff.js";
 import { registerMod } from "./tools/mod.js";
 import { registerConfigCreate } from "./tools/config-create.js";
+import { registerConfigValidate } from "./tools/config-validate.js";
 import { registerServerConfig } from "./tools/server-config.js";
 import { registerLayoutCreate } from "./tools/layout-create.js";
 import { registerCreateModPrompt } from "./prompts/create-mod.js";
@@ -46,12 +48,42 @@ import { registerScenarioTools } from "./tools/wb-scenario.js";
 import { registerScenarioCreate } from "./tools/scenario-create.js";
 import { registerAnimationGraph } from "./tools/animation-graph.js";
 import { registerWbKnowledge } from "./tools/wb-knowledge.js";
+import { registerLayoutValidate } from "./tools/layout-validate.js";
+import { registerProjectScaffoldUI } from "./tools/project-scaffold-ui.js";
 import { registerBuildingSetup } from "./tools/building-setup.js";
+import { registerProjectDiff } from "./tools/project-diff.js";
+import { registerProjectMigrate } from "./tools/project-migrate.js";
+import { registerGameSearch } from "./tools/game-search.js";
+import { registerGameStats } from "./tools/game-stats.js";
+import { registerGameClassInfo } from "./tools/game-class-info.js";
+import { registerProjectReferences } from "./tools/project-references.js";
+import { registerProjectStats } from "./tools/project-stats.js";
+import { registerProjectSearch } from "./tools/project-search.js";
+import { registerProjectBatch } from "./tools/project-batch.js";
+import { registerProjectExport } from "./tools/project-export.js";
+import { registerModCompat } from "./tools/mod-compat.js";
+import { registerProjectTemplate } from "./tools/project-template.js";
+import { registerStringTable } from "./tools/string-table.js";
 import type { Config } from "./config.js";
+import { PakVirtualFS } from "./pak/vfs.js";
+import { logger } from "./utils/logger.js";
 
 export function registerTools(server: McpServer, config: Config): void {
   const searchEngine = new SearchEngine(config.dataDir);
   const patterns = new PatternLibrary(config.patternsDir);
+
+  // Initialize export VFS if export path is configured
+  if (config.exportPath) {
+    try {
+      const pakVfs = PakVirtualFS.get(config.gamePath);
+      if (pakVfs) {
+        pakVfs.setExportPath(config.exportPath);
+        logger.info(`Export VFS linked to PakVFS: ${config.exportPath}`);
+      }
+    } catch (e) {
+      logger.warn(`Failed to initialize export VFS: ${e}`);
+    }
+  }
 
   // Phase 0 tools
   registerApiSearch(server, searchEngine);
@@ -59,16 +91,28 @@ export function registerTools(server: McpServer, config: Config): void {
   registerWikiSearch(server, searchEngine);
   registerWikiRead(server, searchEngine);
   registerProject(server, config);
+  registerProjectStats(server, config);
+  registerProjectSearch(server, config);
+  registerProjectBatch(server, config);
+  registerProjectDiff(server, config);
+  registerProjectExport(server, config);
+  registerProjectReferences(server, config);
+  registerProjectTemplate(server, config);
 
   // Phase 1 tools
   registerMod(server, config, searchEngine, patterns);
   registerScriptCreate(server, config, searchEngine);
   registerPrefab(server, config);
+  registerPrefabDiff(server, config);
 
   // Phase 3 tools
   registerConfigCreate(server, config);
+  registerConfigValidate(server, config);
   registerServerConfig(server, config);
   registerLayoutCreate(server, config);
+  registerLayoutValidate(server, config);
+  registerStringTable(server, config);
+  registerProjectScaffoldUI(server, config);
 
   // Workbench Live Control tools (Phase 4)
   const wbClient = new WorkbenchClient(
@@ -100,6 +144,9 @@ export function registerTools(server: McpServer, config: Config): void {
   // Base game access tools
   registerGameBrowse(server, config);
   registerGameRead(server, config);
+  registerGameSearch(server, config);
+  registerGameStats(server, config);
+  registerGameClassInfo(server, config);
   registerAssetSearch(server, config);
   registerGameDuplicate(server, config, wbClient);
   registerWbEntityDuplicate(server, config, wbClient);
@@ -107,6 +154,8 @@ export function registerTools(server: McpServer, config: Config): void {
   registerAnimationGraph(server, config);
   registerWbKnowledge(server);
   registerBuildingSetup(server, config);
+  registerModCompat(server, config);
+  registerProjectMigrate(server, config);
 
   // MCP Prompts
   registerCreateModPrompt(server, patterns);

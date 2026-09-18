@@ -16,6 +16,8 @@ import { parsePakIndex } from "../../src/pak/reader.js";
  */
 function buildTestPak(files: Array<{ path: string; content: string; compress: boolean }>): Buffer {
   // ── Build DATA payload and FILE tree simultaneously ────────────────────
+  /** Absolute byte offset of the DATA payload within the .pak file (must match serialize below). */
+  const DATA_PAYLOAD_ABS = 56;
   const dataChunks: Buffer[] = [];
   let dataOffset = 0;
 
@@ -57,7 +59,7 @@ function buildTestPak(files: Array<{ path: string; content: string; compress: bo
 
     dir.children.set(fileName, {
       name: fileName,
-      offset: dataOffset,
+      offset: DATA_PAYLOAD_ABS + dataOffset,
       compressedLen: stored.length,
       decompressedLen: raw.length,
       compressed: file.compress,

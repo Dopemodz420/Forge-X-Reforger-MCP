@@ -9,7 +9,7 @@ import { logger } from "./utils/logger.js";
 const config = loadConfig();
 
 const server = new McpServer({
-  name: "reforger-forge-mcp",
+  name: "forge-x-reforger-mcp",
   version: "1.0.0",
 });
 
@@ -17,4 +17,4 @@ registerTools(server, config);
 
 const transport = new StdioServerTransport();
 await server.connect(transport);
-logger.info("ReforgerForge MCP server started");
+logger.info("Forge-X Reforger MCP server started");

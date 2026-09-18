@@ -2,8 +2,15 @@ import { describe, it, expect, beforeAll, afterAll } from "vitest";
 import { writeFileSync, mkdirSync, rmSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
-import { deflateRawSync } from "node:zlib";
+import { deflateSync } from "node:zlib";
 import { PakVirtualFS } from "../../src/pak/vfs.js";
+
+/**
+ * Absolute byte offset within the .pak file where the DATA payload begins
+ * (FORM header 12 + HEAD chunk 36 + DATA chunk header 8).
+ * Real Reforger paks store entry.offset as this absolute position.
+ */
+const DATA_PAYLOAD_ABS = 56;
 
 /**
  * Build a minimal synthetic .pak file (same helper as reader.test.ts).
@@ -18,7 +25,7 @@ function buildTestPak(files: Array<{ path: string; content: string; compress: bo
 
   for (const file of files) {
     const raw = Buffer.from(file.content, "utf-8");
-    const stored = file.compress ? deflateRawSync(raw) : raw;
+    const stored = file.compress ? deflateSync(raw) : raw;
 
     const parts = file.path.split("/");
     const fileName = parts.pop()!;
@@ -33,7 +40,7 @@ function buildTestPak(files: Array<{ path: string; content: string; compress: bo
     }
 
     dir.children.set(fileName, {
-      name: fileName, offset: dataOffset,
+      name: fileName, offset: DATA_PAYLOAD_ABS + dataOffset,
       compressedLen: stored.length, decompressedLen: raw.length,
       compressed: file.compress,
     });

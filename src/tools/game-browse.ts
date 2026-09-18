@@ -80,6 +80,26 @@ export function registerGameBrowse(server: McpServer, config: Config): void {
           logger.debug(`PAK VFS unavailable for game_browse: ${e}`);
         }
 
+        // Merge entries from extracted library
+        if (config.extractedPath && existsSync(config.extractedPath)) {
+          try {
+            const extractedTarget = subPath
+              ? `${config.extractedPath}/${subPath}`
+              : config.extractedPath;
+            if (existsSync(extractedTarget)) {
+              const extractedEntries = listDirectory(extractedTarget, pattern);
+              const existing = new Set(entries.map((e) => e.name.toLowerCase()));
+              for (const ee of extractedEntries) {
+                if (!existing.has(ee.name.toLowerCase())) {
+                  entries.push({ ...ee, type: ee.type + " (extracted)" });
+                }
+              }
+            }
+          } catch {
+            // Skip extracted path errors
+          }
+        }
+
         // Re-sort after merging
         entries.sort((a, b) => {
           if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;

@@ -10,7 +10,7 @@
  */
 
 import { Socket } from "node:net";
-import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
 import { join, resolve, dirname } from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawn, execSync } from "node:child_process";
@@ -18,6 +18,7 @@ import { encodeRequest, decodeResponse } from "./protocol.js";
 import { logger } from "../utils/logger.js";
 import type { Config } from "../config.js";
 import { generateGproj } from "../templates/gproj.js";
+import { saveLastProject, loadLastProject } from "../config.js";
 
 const DEFAULT_CLIENT_ID = "EnfusionMCP";
 const DEFAULT_TIMEOUT_MS = 10_000;
@@ -45,7 +46,7 @@ export interface DiagnosticReport {
   defaultMod: string | null;
   bundledScripts: { path: string; exists: boolean };
   standaloneAddon: { path: string; exists: boolean; fileCount: number };
-  installedMods: Array<{ modDir: string; handlerDir: string; fileCount: number }>;
+  installedMods: Array<{ modDir: string; handlerDir: string; fileCount: number; hasScriptsModule: boolean }>;
   /** Result of the NET API probe. */
   netApi: "up_with_handlers" | "up_no_handlers" | "refused" | "timeout" | "error";
   netApiError?: string;
@@ -287,7 +288,11 @@ export class WorkbenchClient {
           const handlerDir = join(this.config.projectPath, entry.name, "Scripts", "WorkbenchGame", HANDLER_FOLDER);
           if (existsSync(handlerDir)) {
             const fileCount = readdirSync(handlerDir).filter((f) => f.endsWith(".c")).length;
-            installedMods.push({ modDir: join(this.config.projectPath, entry.name), handlerDir, fileCount });
+            const gprojFile = readdirSync(join(this.config.projectPath, entry.name)).find(f => f.endsWith(".gproj"));
+            const hasScriptsModule = gprojFile
+              ? this.gprojHasScriptsModule(join(this.config.projectPath, entry.name, gprojFile))
+              : false;
+            installedMods.push({ modDir: join(this.config.projectPath, entry.name), handlerDir, fileCount, hasScriptsModule });
           }
         }
       } catch { /* ignore */ }
@@ -387,10 +392,16 @@ export class WorkbenchClient {
 
     // Inject into the currently-open mod (same logic as launchWorkbench).
     const recoveryGproj = this.findFallbackGproj();
-    if (recoveryGproj) {
+    if (recoveryGproj && this.gprojHasScriptsModule(recoveryGproj)) {
       this.installHandlerScripts(dirname(recoveryGproj), true);
       this.cleanupStandaloneAddon();
     } else {
+      if (recoveryGproj) {
+        logger.warn(
+          `Recovery mod .gproj missing Modules { "scripts" }: ${recoveryGproj}. ` +
+          `Handlers cannot compile in this mod.`
+        );
+      }
       this.installHandlerScripts(undefined, true);
     }
 
@@ -437,20 +448,34 @@ export class WorkbenchClient {
     }
 
     // 2. Resolve the target .gproj and inject handler scripts into that mod.
-    //    Handler scripts must compile as part of the opened project — Workbench
-    //    only compiles the active project and its declared dependencies, NOT every
-    //    addon folder in the project directory.  A standalone sibling addon will
-    //    never be compiled unless the user's project explicitly depends on it.
-    let resolvedGproj = gprojPath || this.findFallbackGproj();
+    //    Priority: explicit gprojPath > last saved project > findFallbackGproj > standalone addon
+    let resolvedGproj = gprojPath || loadLastProject() || this.findFallbackGproj();
+    if (resolvedGproj && !gprojPath) {
+      // Verify the saved/fallback gproj still exists
+      if (!existsSync(resolvedGproj)) {
+        logger.info(`Saved project no longer exists: ${resolvedGproj}`);
+        resolvedGproj = null;
+      }
+    }
     if (resolvedGproj) {
-      this.installHandlerScripts(dirname(resolvedGproj));
-      // Remove any leftover standalone addon to prevent duplicate class errors.
-      // If a previous session created {projectPath}/EnfusionMCP/ it would be
-      // picked up as a sibling addon and cause compile-time class name conflicts.
-      this.cleanupStandaloneAddon();
-    } else {
-      // No project found — fall back to standalone addon as last resort and open it
-      // directly so its handlers at least compile (user's project won't be open).
+      // Check if the mod's .gproj declares Modules { "scripts" }.
+      // Without it, Workbench skips script compilation and our handler scripts
+      // (NetApiHandler subclasses) are never registered with the NET API.
+      if (!this.gprojHasScriptsModule(resolvedGproj)) {
+        logger.warn(
+          `Mod .gproj missing Modules { "scripts" }: ${resolvedGproj}. ` +
+          `Handler scripts won't compile. Falling back to standalone addon.`
+        );
+        resolvedGproj = null;
+      } else {
+        this.installHandlerScripts(dirname(resolvedGproj));
+        // Remove any leftover standalone addon to prevent duplicate class errors.
+        this.cleanupStandaloneAddon();
+      }
+    }
+    if (!resolvedGproj) {
+      // No project found or mod lacks Modules — use standalone addon.
+      // Open it directly so its handlers compile (user's project won't be open).
       this.installHandlerScripts();
       const fallbackBase = this.config?.projectPath;
       if (fallbackBase) {
@@ -501,6 +526,22 @@ export class WorkbenchClient {
         this._state.connected = true;
         this._state.lastUpdated = Date.now();
         logger.info("Workbench NET API is responding.");
+
+        // Force edit mode on startup — Workbench may restore a stale game-mode
+        // session from the previous close. SwitchToEditMode is idempotent (no-op
+        // if already in edit mode) and prevents the stuck-in-game-mode issue.
+        try {
+          await this.rawCall("EMCP_WB_EditorControl", { action: "stop" }, { timeout: 5000, skipAutoLaunch: true });
+          logger.info("Forced edit mode on startup.");
+        } catch {
+          // Best-effort — if this fails, the user can call wb_stop manually.
+          logger.debug("Could not force edit mode on startup (non-fatal).");
+        }
+
+        // Persist the project path so next launch reopens the same project
+        if (resolvedGproj) {
+          saveLastProject(resolvedGproj);
+        }
         return;
       } catch (err) {
         if (err instanceof WorkbenchError) {
@@ -543,6 +584,20 @@ export class WorkbenchClient {
     if (existsSync(rootPath)) return rootPath;
 
     return null;
+  }
+
+  /**
+   * Check if a .gproj file declares Modules { "scripts" }.
+   * Without this, Workbench skips script compilation and handler scripts
+   * (NetApiHandler subclasses) are never registered with the NET API.
+   */
+  private gprojHasScriptsModule(gprojPath: string): boolean {
+    try {
+      const content = readFileSync(gprojPath, "utf-8");
+      return /Modules\s*\{[^}]*"scripts"/.test(content);
+    } catch {
+      return false;
+    }
   }
 
   /**
@@ -603,8 +658,15 @@ export class WorkbenchClient {
     }
 
     if (!this.config) return null;
+
+    // Config gamePath (set in reforger-forge.config.json)
+    if (this.config.gamePath && existsSync(join(this.config.gamePath, "addons"))) {
+      logger.info(`Using game directory from config: ${this.config.gamePath}`);
+      return this.config.gamePath;
+    }
+
+    // Derive from workbenchPath — may be on a different drive than the game
     const toolsDir = this.config.workbenchPath;
-    // workbenchPath may be "Arma Reforger Tools" or "Arma Reforger Tools\Workbench"
     const candidates = [
       resolve(toolsDir, "..", "Arma Reforger"),
       resolve(toolsDir, "..", "ArmaReforger"),
@@ -642,10 +704,8 @@ export class WorkbenchClient {
     const targetBase = modDir || join(fallbackBase!, HANDLER_FOLDER);
     const targetScriptsDir = join(targetBase, "Scripts", "WorkbenchGame", HANDLER_FOLDER);
 
-    // Already installed? Skip unless force-reinstalling (e.g. recovery after missing handlers)
-    if (!force && existsSync(join(targetScriptsDir, "EMCP_WB_Ping.c"))) {
-      return;
-    }
+    // Always overwrite handler scripts to ensure they match the current MCP toolset version.
+    // Previously this skipped when EMCP_WB_Ping.c existed, causing stale handlers after updates.
 
 
     logger.info(`Installing handler scripts to ${targetScriptsDir}`);

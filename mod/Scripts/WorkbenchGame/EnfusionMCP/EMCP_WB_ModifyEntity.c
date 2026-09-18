@@ -189,23 +189,12 @@ class EMCP_WB_ModifyEntity : NetApiHandler
 
 		if (req.action == "move")
 		{
-			vector pos = ParseVectorString(req.value);
-			IEntity ent = api.SourceToEntity(entSrc);
-			if (!ent)
-			{
-				resp.status = "error";
-				resp.message = "Cannot get runtime entity for transform update";
-				return resp;
-			}
-
 			api.BeginEntityAction("Move entity via NetAPI");
 
-			// Set position via SetVariableValue on the coords property
-			BaseContainer entContainer = entSrc.ToBaseContainer();
-			if (entContainer)
-			{
-				api.SetVariableValue(entContainer, null, "coords", req.value);
-			}
+			// Set position via SetVariableValue on the coords property.
+			// IEntitySource derives from BaseContainer, so it can be passed
+			// directly as the top-level container.
+			api.SetVariableValue(entSrc, null, "coords", req.value);
 
 			api.EndEntityAction();
 			resp.status = "ok";
@@ -214,23 +203,12 @@ class EMCP_WB_ModifyEntity : NetApiHandler
 		else if (req.action == "rotate")
 		{
 			vector angles = ParseVectorString(req.value);
-			IEntity ent = api.SourceToEntity(entSrc);
-			if (!ent)
-			{
-				resp.status = "error";
-				resp.message = "Cannot get runtime entity for rotation update";
-				return resp;
-			}
 
 			api.BeginEntityAction("Rotate entity via NetAPI");
 
-			BaseContainer entContainer = entSrc.ToBaseContainer();
-			if (entContainer)
-			{
-				api.SetVariableValue(entContainer, null, "angleX", angles[0].ToString());
-				api.SetVariableValue(entContainer, null, "angleY", angles[1].ToString());
-				api.SetVariableValue(entContainer, null, "angleZ", angles[2].ToString());
-			}
+			api.SetVariableValue(entSrc, null, "angleX", angles[0].ToString());
+			api.SetVariableValue(entSrc, null, "angleY", angles[1].ToString());
+			api.SetVariableValue(entSrc, null, "angleZ", angles[2].ToString());
 
 			api.EndEntityAction();
 			resp.status = "ok";

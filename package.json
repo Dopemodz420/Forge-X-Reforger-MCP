@@ -1,9 +1,10 @@
 {
-  "name": "reforger-forge-mcp",
+  "name": "forge-x-reforger-mcp",
   "version": "1.0.0",
   "type": "module",
-  "description": "Universal MCP server for Arma Reforger modding — works with any AI agent (Cursor, Claude, Kiro, VS Code)",
+  "description": "Forge-X — Universal MCP server for Arma Reforger modding — works with any AI agent (Cursor, Claude, Kiro, VS Code)",
   "bin": {
+    "forge-x-reforger-mcp": "./dist/index.js",
     "reforger-forge-mcp": "./dist/index.js"
   },
   "scripts": {
@@ -43,11 +44,11 @@
   ],
   "repository": {
     "type": "git",
-    "url": "https://github.com/wastelandgoats/reforger-forge-mcp.git"
+    "url": "https://github.com/Dopemodz420/Forge-X-Reforger-MCP.git"
   },
-  "homepage": "https://github.com/wastelandgoats/reforger-forge-mcp",
+  "homepage": "https://github.com/Dopemodz420/Forge-X-Reforger-MCP",
   "bugs": {
-    "url": "https://github.com/wastelandgoats/reforger-forge-mcp/issues"
+    "url": "https://github.com/Dopemodz420/Forge-X-Reforger-MCP/issues"
   },
   "author": "Goatboy",
   "license": "MIT",

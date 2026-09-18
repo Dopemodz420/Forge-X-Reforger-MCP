@@ -49,7 +49,7 @@ class EMCP_WB_GetStateResponse : JsonApiStruct
 		StartArray("selectedNames");
 		for (int i = 0; i < m_aSelectedNames.Count(); i++)
 		{
-			StoreString("", m_aSelectedNames[i]);
+			ItemString(m_aSelectedNames[i]);
 		}
 		EndArray();
 	}

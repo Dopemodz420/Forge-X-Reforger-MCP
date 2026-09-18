@@ -74,7 +74,7 @@ class EMCP_WB_LocalizationResponse : JsonApiStruct
 			StartArray("languages");
 			for (int i = 0; i < m_aLanguages.Count(); i++)
 			{
-				StoreString("", m_aLanguages[i]);
+				ItemString(m_aLanguages[i]);
 			}
 			EndArray();
 		}

@@ -3,5 +3,6 @@
   "gamePath": "C:\\Program Files (x86)\\Steam\\steamapps\\common\\Arma Reforger",
   "projectPath": "",
   "workbenchHost": "127.0.0.1",
-  "workbenchPort": 5775
+  "workbenchPort": 5780,
+  "exportPath": ""
 }

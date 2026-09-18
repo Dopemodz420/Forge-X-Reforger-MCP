@@ -1,7 +1,8 @@
-import { openSync, readSync, closeSync, readdirSync, existsSync } from "node:fs";
+import { openSync, readSync, closeSync, readdirSync, existsSync, readFileSync, statSync } from "node:fs";
 import { join, extname } from "node:path";
-import { inflateRawSync } from "node:zlib";
+import { inflateSync, inflateRawSync } from "node:zlib";
 import { parsePakIndex, type PakIndex, type PakDirEntry, type PakFileEntry } from "./reader.js";
+import { ExportVirtualFS } from "./export-vfs.js";
 import { logger } from "../utils/logger.js";
 
 // ── Public types ─────────────────────────────────────────────────────────────
@@ -15,8 +16,22 @@ export interface VfsEntry {
 
 interface FileRef {
   pakPath: string;
-  dataStart: number;
   entry: PakFileEntry;
+  /** Original-cased virtual path as stored in the pak (for display/indexing) */
+  path: string;
+}
+
+/**
+ * Decompress a file payload. Real Reforger .pak files use zlib-wrapped
+ * (deflate with zlib header) streams, while some synthetic/raw payloads use
+ * raw deflate. Try zlib first, fall back to raw deflate.
+ */
+function inflatePayload(buf: Buffer): Buffer {
+  try {
+    return inflateSync(buf);
+  } catch {
+    return inflateRawSync(buf);
+  }
 }
 
 // ── PakVirtualFS ─────────────────────────────────────────────────────────────
@@ -36,11 +51,14 @@ export class PakVirtualFS {
   private fileIndex = new Map<string, FileRef>();
   /** Merged directory tree for browsing */
   private root: PakDirEntry = { kind: "dir", name: "", children: new Map() };
+  /** Export VFS for reading unpacked files directly from disk (fast, no decompression) */
+  private exportVfs: ExportVirtualFS | null = null;
 
   /** Clear the cached VFS instance, forcing a fresh rebuild on next get(). */
   static invalidate(): void {
     PakVirtualFS.instance = null;
     PakVirtualFS.instanceGamePath = null;
+    ExportVirtualFS.invalidate();
   }
 
   /**
@@ -77,6 +95,35 @@ export class PakVirtualFS {
         }
       }
 
+      // Scan additional directories from ENFUSION_EXTRA_PAK_DIRS
+      const extraDirs = process.env.ENFUSION_EXTRA_PAK_DIRS;
+      if (extraDirs) {
+        for (const dir of extraDirs.split(",").map((d) => d.trim()).filter(Boolean)) {
+          if (!existsSync(dir)) continue;
+          try {
+            const extraEntries = readdirSync(dir, { withFileTypes: true });
+            for (const entry of extraEntries) {
+              if (entry.isFile() && extname(entry.name).toLowerCase() === ".pak") {
+                pakFiles.push(join(dir, entry.name));
+              } else if (entry.isDirectory()) {
+                try {
+                  const subEntries = readdirSync(join(dir, entry.name), { withFileTypes: true });
+                  for (const sub of subEntries) {
+                    if (sub.isFile() && extname(sub.name).toLowerCase() === ".pak") {
+                      pakFiles.push(join(dir, entry.name, sub.name));
+                    }
+                  }
+                } catch {
+                  // Skip
+                }
+              }
+            }
+          } catch {
+            // Skip unreadable extra directories
+          }
+        }
+      }
+
       pakFiles.sort(); // deterministic order — first pak alphabetically wins on duplicates
     } catch {
       return null;
@@ -88,6 +135,14 @@ export class PakVirtualFS {
     PakVirtualFS.instance = vfs;
     PakVirtualFS.instanceGamePath = gamePath;
     return vfs;
+  }
+
+  /**
+   * Set the export path for this VFS instance. This enables reading files directly
+   * from the unpacked export directory (faster than decompressing from paks).
+   */
+  setExportPath(exportPath: string): void {
+    this.exportVfs = ExportVirtualFS.get(exportPath);
   }
 
   private constructor(pakFiles: string[]) {
@@ -117,48 +172,77 @@ export class PakVirtualFS {
   /**
    * List entries in a virtual directory.
    * Path uses forward slashes, no leading slash (e.g., "Prefabs/Weapons").
-   * Empty string = root.
+   * Empty string = root. Merges entries from pak index and export VFS.
    */
   listDir(virtualPath: string): VfsEntry[] {
-    const dir = this.resolveDir(virtualPath);
-    if (!dir) return [];
-
+    const norm = normalizePath(virtualPath);
     const entries: VfsEntry[] = [];
-    for (const [name, child] of dir.children) {
-      if (child.kind === "dir") {
-        entries.push({ name, isDirectory: true, size: 0 });
-      } else {
-        entries.push({ name, isDirectory: false, size: child.decompressedLen });
+    const seen = new Set<string>();
+
+    // Pak directory entries
+    const dir = this.resolveDir(norm);
+    if (dir) {
+      for (const [name, child] of dir.children) {
+        const lower = name.toLowerCase();
+        seen.add(lower);
+        if (child.kind === "dir") {
+          entries.push({ name, isDirectory: true, size: 0 });
+        } else {
+          entries.push({ name, isDirectory: false, size: child.decompressedLen });
+        }
       }
     }
+
+    // Export VFS entries (merge with pak)
+    if (this.exportVfs) {
+      const exportEntries = this.exportVfs.listDir(norm);
+      for (const ee of exportEntries) {
+        if (!seen.has(ee.name.toLowerCase())) {
+          entries.push({ name: ee.name, isDirectory: ee.isDirectory, size: ee.size });
+        }
+      }
+    }
+
     return entries;
   }
 
-  /** Check if a path exists (file or directory). */
+  /** Check if a path exists (file or directory). Checks both pak index and export VFS. */
   exists(virtualPath: string): boolean {
     const norm = normalizePath(virtualPath);
     if (norm === "") return true; // root always exists
-    return this.fileIndex.has(norm) || this.resolveDir(norm) !== null;
+    if (this.fileIndex.has(norm)) return true;
+    if (this.resolveDir(norm) !== null) return true;
+    if (this.exportVfs && this.exportVfs.exists(norm)) return true;
+    return false;
   }
 
   /**
    * Read a file's raw bytes from the pak archive.
+   * If an export VFS is available and has the file, reads from disk (faster, no decompression).
    * Opens the .pak, seeks to the correct offset, reads, decompresses if needed.
    */
   readFile(virtualPath: string): Buffer {
     const norm = normalizePath(virtualPath);
+    // Prefer export VFS (faster — no decompression needed)
+    if (this.exportVfs && this.exportVfs.exists(norm)) {
+      const text = this.exportVfs.readTextFile(norm);
+      return Buffer.from(text, "utf-8");
+    }
+
     const ref = this.fileIndex.get(norm);
     if (!ref) {
       throw new Error(`File not found in pak: ${virtualPath}`);
     }
 
-    const { pakPath, dataStart, entry } = ref;
+    const { pakPath, entry } = ref;
     const readLen = entry.compressed ? entry.compressedLen : entry.decompressedLen;
 
     const fd = openSync(pakPath, "r");
     try {
       const buf = Buffer.alloc(readLen);
-      const position = dataStart + entry.offset;
+      // entry.offset is an ABSOLUTE byte offset within the .pak file
+      // (the file body begins right at the DATA payload start; do NOT add dataStart).
+      const position = entry.offset;
       const bytesRead = readSync(fd, buf, 0, readLen, position);
       if (bytesRead < readLen) {
         throw new Error(
@@ -167,7 +251,7 @@ export class PakVirtualFS {
       }
 
       if (entry.compressed) {
-        return inflateRawSync(buf);
+        return inflatePayload(buf);
       }
       return buf;
     } finally {
@@ -175,21 +259,157 @@ export class PakVirtualFS {
     }
   }
 
-  /** Read a file as UTF-8 text. */
+  /** Read a file as UTF-8 text. Prefers export VFS (faster, no decompression). */
   readTextFile(virtualPath: string): string {
+    const norm = normalizePath(virtualPath);
+    // Prefer export VFS (faster — no decompression needed)
+    if (this.exportVfs && this.exportVfs.exists(norm)) {
+      return this.exportVfs.readTextFile(norm);
+    }
     return this.readFile(virtualPath).toString("utf-8");
   }
 
-  /** Get decompressed file size without reading/inflating. Returns -1 if not found. */
+  /** Get decompressed file size without reading/inflating. Returns -1 if not found. Checks export VFS too. */
   fileSize(virtualPath: string): number {
     const norm = normalizePath(virtualPath);
     const ref = this.fileIndex.get(norm);
-    return ref ? ref.entry.decompressedLen : -1;
+    if (ref) return ref.entry.decompressedLen;
+    if (this.exportVfs) {
+      const exportSize = this.exportVfs.fileSize(norm);
+      if (exportSize >= 0) return exportSize;
+    }
+    return -1;
   }
 
   /** Get all file paths in the VFS (for building the asset search index). */
   allFilePaths(): string[] {
-    return Array.from(this.fileIndex.keys());
+    return Array.from(this.fileIndex.values()).map((r) => r.path);
+  }
+
+  /**
+   * Search files by name pattern. Supports:
+   * - Exact substring: "InventoryMenu" matches any path containing it
+   * - Glob-style: "*Inventory*.c" — * is a wildcard for any characters
+   * - Extension filter: ".c" matches all .c files
+   * - Combined: "SCR_*.c" matches all scripts starting with SCR_
+   *
+   * Case-insensitive. Returns up to `limit` results, sorted by relevance.
+   * Searches both pak index and export VFS.
+   */
+  searchFiles(pattern: string, limit: number = 50): string[] {
+    const results: Array<{ path: string; score: number }> = [];
+    const seen = new Set<string>();
+    const patLower = pattern.toLowerCase();
+
+    // Parse glob-style pattern
+    const hasGlob = pattern.includes("*");
+    let regex: RegExp | null = null;
+    if (hasGlob) {
+      // Convert glob to regex: * → [^/]*, ? → [^/], escape the rest
+      const escaped = patLower
+        .replace(/[.+^${}()|[\]\\]/g, "\\$&")
+        .replace(/\*/g, "[^/]*")
+        .replace(/\?/g, "[^/]");
+      regex = new RegExp(escaped, "i");
+    }
+
+    function scorePath(pathLower: string, filename: string): number {
+      if (regex) {
+        if (regex.test(pathLower)) {
+          return regex.test(filename) ? 80 : 50;
+        }
+        return 0;
+      }
+      if (filename === patLower) return 100;
+      if (filename.startsWith(patLower)) return 90;
+      if (filename.includes(patLower)) return 80;
+      if (pathLower.endsWith("/" + patLower) || pathLower.includes(patLower)) return 40;
+      return 0;
+    }
+
+    // Search pak index
+    for (const ref of this.fileIndex.values()) {
+      const pathLower = ref.path.toLowerCase();
+      const segments = ref.path.split("/");
+      const filename = segments[segments.length - 1]?.toLowerCase() ?? "";
+      const score = scorePath(pathLower, filename);
+      if (score > 0) {
+        seen.add(pathLower);
+        results.push({ path: ref.path, score });
+      }
+    }
+
+    // Search export VFS
+    if (this.exportVfs) {
+      for (const exportPath of this.exportVfs.allFilePaths()) {
+        if (seen.has(exportPath)) continue;
+        const segments = exportPath.split("/");
+        const filename = segments[segments.length - 1]?.toLowerCase() ?? "";
+        const score = scorePath(exportPath, filename);
+        if (score > 0) {
+          results.push({ path: exportPath, score });
+        }
+      }
+    }
+
+    results.sort((a, b) => b.score - a.score);
+    return results.slice(0, limit).map((r) => r.path);
+  }
+
+  /**
+   * Search for files whose content matches a string (case-insensitive substring).
+   * Only searches text files (.c, .conf, .layout, etc.). Reads file content from paks and export.
+   * Returns up to `limit` matching file paths.
+   */
+  searchFileContent(query: string, extensions: string[], limit: number = 50): string[] {
+    const results: string[] = [];
+    const seen = new Set<string>();
+    const queryLower = query.toLowerCase();
+    const extSet = new Set(extensions.map((e) => e.toLowerCase()));
+
+    function matchesExt(path: string): boolean {
+      const ext = path.substring(path.lastIndexOf(".")).toLowerCase();
+      return extSet.has(ext);
+    }
+
+    // Search pak index
+    for (const ref of this.fileIndex.values()) {
+      if (results.length >= limit) break;
+      if (!matchesExt(ref.path)) continue;
+      if (ref.entry.decompressedLen > 512_000) continue;
+
+      try {
+        const content = this.readTextFile(ref.path);
+        if (content.toLowerCase().includes(queryLower)) {
+          seen.add(ref.path.toLowerCase());
+          results.push(ref.path);
+        }
+      } catch {
+        // Skip unreadable files
+      }
+    }
+
+    // Search export VFS
+    if (this.exportVfs) {
+      for (const exportPath of this.exportVfs.allFilePaths()) {
+        if (results.length >= limit) break;
+        if (seen.has(exportPath)) continue;
+        if (!matchesExt(exportPath)) continue;
+
+        try {
+          const size = this.exportVfs.fileSize(exportPath);
+          if (size > 512_000) continue;
+          const content = this.exportVfs.readTextFile(exportPath);
+          if (content.toLowerCase().includes(queryLower)) {
+            results.push(exportPath);
+          }
+        } catch {
+          // Skip
+        }
+      }
+    }
+
+    return results;
   }
 
   /** Get the number of indexed files. */
@@ -202,6 +422,7 @@ export class PakVirtualFS {
   /**
    * Merge a parsed pak tree into the unified directory tree.
    * Returns the number of file entries added.
+   * Case-insensitive: Windows/Enfusion paths are case-insensitive.
    */
   private mergeTree(
     target: PakDirEntry,
@@ -215,22 +436,25 @@ export class PakVirtualFS {
       const childPath = pathPrefix ? `${pathPrefix}/${name}` : name;
 
       if (child.kind === "dir") {
-        // Merge directories: create in target if missing, then recurse
-        let targetChild = target.children.get(name);
-        if (!targetChild || targetChild.kind !== "dir") {
+        // Merge directories case-insensitively: find existing child ignoring case
+        let targetChild = findChildDir(target, name);
+        if (!targetChild) {
           targetChild = { kind: "dir", name, children: new Map() };
           target.children.set(name, targetChild);
         }
         count += this.mergeTree(targetChild, child, index, childPath);
       } else {
-        // File: add to target and flat index (first pak wins)
+        // File: add to target and flat index (first pak wins) — case-insensitive via normalizePath
         const norm = normalizePath(childPath);
         if (!this.fileIndex.has(norm)) {
-          target.children.set(name, child);
+          // Avoid duplicate filename with different case in same directory
+          if (!hasChildFile(target, name)) {
+            target.children.set(name, child);
+          }
           this.fileIndex.set(norm, {
             pakPath: index.pakPath,
-            dataStart: index.dataStart,
             entry: child,
+            path: childPath,
           });
           count++;
         }
@@ -240,7 +464,7 @@ export class PakVirtualFS {
     return count;
   }
 
-  /** Resolve a virtual path to a directory entry, or null if not found. */
+  /** Resolve a virtual path to a directory entry, or null if not found. Case-insensitive. */
   private resolveDir(virtualPath: string): PakDirEntry | null {
     const norm = normalizePath(virtualPath);
     if (norm === "") return this.root;
@@ -249,8 +473,8 @@ export class PakVirtualFS {
     let current: PakDirEntry = this.root;
 
     for (const part of parts) {
-      const child = current.children.get(part);
-      if (!child || child.kind !== "dir") return null;
+      const child = findChildDir(current, part);
+      if (!child) return null;
       current = child;
     }
 
@@ -260,10 +484,28 @@ export class PakVirtualFS {
 
 // ── Helpers ──────────────────────────────────────────────────────────────────
 
-/** Normalize a virtual path: trim slashes, convert backslashes, lowercase. */
+/** Case-insensitive directory child lookup */
+function findChildDir(dir: PakDirEntry, name: string): PakDirEntry | null {
+  const lower = name.toLowerCase();
+  for (const [, child] of dir.children) {
+    if (child.kind === "dir" && child.name.toLowerCase() === lower) return child;
+  }
+  return null;
+}
+
+function hasChildFile(dir: PakDirEntry, name: string): boolean {
+  const lower = name.toLowerCase();
+  for (const [, child] of dir.children) {
+    if (child.kind === "file" && child.name.toLowerCase() === lower) return true;
+  }
+  return false;
+}
+
+/** Normalize a virtual path: trim slashes, convert backslashes, collapse, lowercase. Enfusion/Windows is case-insensitive. */
 function normalizePath(p: string): string {
   return p
     .replace(/\\/g, "/")
     .replace(/^\/+|\/+$/g, "")
-    .replace(/\/+/g, "/");
+    .replace(/\/+/g, "/")
+    .toLowerCase();
 }

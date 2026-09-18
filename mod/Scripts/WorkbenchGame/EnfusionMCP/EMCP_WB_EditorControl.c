@@ -65,8 +65,19 @@ class EMCP_WB_EditorControl : NetApiHandler
 		else if (req.action == "stop")
 		{
 			worldEditor.SwitchToEditMode();
-			resp.status = "ok";
-			resp.message = "Switched to edit mode";
+
+			// Verify the mode change actually succeeded
+			WorldEditorAPI verifyApi = worldEditor.GetApi();
+			if (verifyApi)
+			{
+				resp.status = "ok";
+				resp.message = "Switched to edit mode";
+			}
+			else
+			{
+				resp.status = "error";
+				resp.message = "SwitchToEditMode called but WorldEditorAPI still not available — Workbench may be stuck in game mode. Try restarting Workbench.";
+			}
 		}
 		else if (req.action == "save")
 		{

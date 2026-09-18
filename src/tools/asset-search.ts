@@ -28,23 +28,64 @@ const TYPE_FILTER: Record<string, string[]> = {
   layout: [".layout"],
 };
 
+/** Resource references in entity catalog configs, e.g.
+ *  m_sEntityPrefab "{657590C1EC9E27D3}Prefabs/Groups/OPFOR/Group_USSR_LightFireTeam.et" */
+export const CATALOG_GUID_PATTERN = /\{([0-9A-Fa-f]{16})\}\s*([^\s"]+\.et)/g;
+
+/** Generic resource references (layouts, imagesets, textures, fonts, configs, materials), e.g.
+ *  Layout "{C5D8399074D02270}UI/layouts/Menus/MainMenu/MainMenu.layout"
+ *  path "{403EEC9EC77AE359}UI/Textures/Icons/icons_mapMarkersUI-glow_atlas.edds"
+ *  static const ResourceName LAYOUT = "{681D3C8C634F895F}UI/layouts/Editor/Saving/Save.layout" */
+export const REF_GUID_PATTERN = /\{([0-9A-Fa-f]{16})\}\s*([^\s"{}(]+\.(?:layout|imageset|edds|fnt|conf|emat))\b/g;
+
 /** Cached file index — built once per session */
 let cachedIndex: AssetEntry[] | null = null;
 let cachedBasePath: string | null = null;
 let cachedGuidDiag = "";
 
 /**
- * Parse entity catalog .conf files to build a map of normalized prefab path → GUID.
- * Scans loose files under basePath (e.g. addons/data/DataXXX/Configs/EntityCatalog/).
- * Entity catalogs contain lines like:
- *   m_sEntityPrefab "{657590C1EC9E27D3}Prefabs/Groups/OPFOR/Group_USSR_LightFireTeam.et"
+ * Collect GUID→resource-path pairs from a text chunk, writing into guidMap.
+ * Returns how many new pairs were added.
  */
-function buildGuidIndex(basePath: string): { guidMap: Map<string, string>; diag: string } {
+export function scanGuidChunk(
+  guidMap: Map<string, string>,
+  chunk: string,
+  pattern: RegExp
+): number {
+  let added = 0;
+  pattern.lastIndex = 0;
+  let match: RegExpExecArray | null;
+  while ((match = pattern.exec(chunk)) !== null) {
+    const guid = match[1].toUpperCase();
+    const resPath = match[2].replace(/\\/g, "/").toLowerCase();
+    if (!guidMap.has(resPath)) {
+      guidMap.set(resPath, guid);
+      added++;
+    }
+  }
+  return added;
+}
+
+/**
+ * Build a map of normalized resource path → GUID.
+ * GUIDs are embedded directly in game content (vanilla packs strip .meta headers),
+ * so they are mined from:
+ *   1. Loose entity catalog .conf files on disk (unpacked base game data).
+ *   2. Entity catalog .conf files inside .pak archives (packed base game data) → prefabs.
+ *   3. UI references inside packed menu presets (Configs/System/chimeraMenus.conf),
+ *      all .layout files and all .imageset files → layouts, textures, imagesets, fonts.
+ *   4. Enforce scripts and Configs/System configs → resources named in code attributes/consts.
+ */
+export function buildGuidIndex(
+  basePath: string,
+  pakVfs: PakVirtualFS | null,
+  pakPaths: string[]
+): { guidMap: Map<string, string>; diag: string } {
   const guidMap = new Map<string, string>();
-  const GUID_PATTERN = /\{([0-9A-Fa-f]{16})\}([^\s"]+\.et)/g;
-
   let catalogCount = 0;
+  let refCount = 0;
 
+  // 1. Loose entity catalogs (base game unpacked)
   function walkCatalogs(dir: string): void {
     let entries;
     try {
@@ -60,24 +101,58 @@ function buildGuidIndex(basePath: string): { guidMap: Map<string, string>; diag:
                  dir.toLowerCase().includes("entitycatalog")) {
         catalogCount++;
         try {
-          const content = readFileSync(fullPath, "utf-8");
-          let match: RegExpExecArray | null;
-          GUID_PATTERN.lastIndex = 0;
-          while ((match = GUID_PATTERN.exec(content)) !== null) {
-            const guid = match[1].toUpperCase();
-            const prefabPath = match[2].replace(/\\/g, "/");
-            guidMap.set(prefabPath.toLowerCase(), guid);
-          }
+          refCount += scanGuidChunk(guidMap, readFileSync(fullPath, "utf-8"), CATALOG_GUID_PATTERN);
         } catch (e) {
           logger.warn(`GUID index: failed to read catalog ${fullPath}: ${e}`);
         }
       }
     }
   }
-
   walkCatalogs(basePath);
 
-  const diag = `${guidMap.size} GUIDs from ${catalogCount} catalogs (loose files)`;
+  if (pakVfs) {
+    // 2. Packed entity catalogs → prefab (.et) GUIDs
+    for (const p of pakPaths) {
+      const low = p.toLowerCase();
+      if (!low.endsWith(".conf") || !low.includes("entitycatalog")) continue;
+      catalogCount++;
+      try {
+        refCount += scanGuidChunk(guidMap, pakVfs.readTextFile(p), CATALOG_GUID_PATTERN);
+      } catch (e) {
+        logger.warn(`GUID index: failed to read catalog ${p}: ${e}`);
+      }
+    }
+
+    // 3. Packed UI references → layout/imageset/edds/fnt GUIDs
+    for (const p of pakPaths) {
+      const low = p.toLowerCase();
+      if (low === "configs/system/chimeramenus.conf" ||
+          low.endsWith(".layout") ||
+          low.endsWith(".imageset")) {
+        try {
+          refCount += scanGuidChunk(guidMap, pakVfs.readTextFile(p), REF_GUID_PATTERN);
+        } catch (e) {
+          logger.warn(`GUID index: failed to scan refs in ${p}: ${e}`);
+        }
+      }
+    }
+
+    // 4. Scripts and system configs → resources referenced from code (layouts, fonts, textures, confs)
+    for (const p of pakPaths) {
+      const low = p.toLowerCase();
+      const isScript = low.endsWith(".c");
+      const isSystemConf = low.startsWith("configs/system/") && low.endsWith(".conf");
+      if (!isScript && !isSystemConf) continue;
+      if (pakVfs.fileSize(p) > 262144) continue; // skip very large files
+      try {
+        refCount += scanGuidChunk(guidMap, pakVfs.readTextFile(p), REF_GUID_PATTERN);
+      } catch (e) {
+        logger.warn(`GUID index: failed to scan refs in ${p}: ${e}`);
+      }
+    }
+  }
+
+  const diag = `${guidMap.size} GUIDs from ${catalogCount} catalogs + ${refCount} references (loose+pak)`;
   logger.info(`GUID index built: ${diag}`);
   return { guidMap, diag };
 }
@@ -115,10 +190,22 @@ function buildIndex(basePath: string, gamePath: string): AssetEntry[] {
 
   walk(basePath);
 
-  // 2. Build GUID index from loose entity catalog files
+  // 2. Resolve pak archive contents (lazily initialized, cached per game path)
+  let pakVfs: PakVirtualFS | null = null;
+  let pakPaths: string[] = [];
+  try {
+    pakVfs = PakVirtualFS.get(gamePath);
+    if (pakVfs) {
+      pakPaths = pakVfs.allFilePaths();
+    }
+  } catch (e) {
+    logger.warn(`Failed to init pak VFS: ${e}`);
+  }
+
+  // 3. Build GUID index from entity catalogs (loose + packed) and UI resource references
   let guidMap: Map<string, string> | null = null;
   try {
-    const { guidMap: gm, diag } = buildGuidIndex(basePath);
+    const { guidMap: gm, diag } = buildGuidIndex(basePath, pakVfs, pakPaths);
     guidMap = gm;
     cachedGuidDiag = diag;
   } catch (e) {
@@ -127,11 +214,10 @@ function buildIndex(basePath: string, gamePath: string): AssetEntry[] {
     logger.warn(`Failed to build GUID index: ${e}`);
   }
 
-  // 3. Add entries from .pak files (skip duplicates already found as loose files)
+  // 4. Add entries from .pak files (skip duplicates already found as loose files)
   try {
-    const pakVfs = PakVirtualFS.get(gamePath);
     if (pakVfs) {
-      for (const filePath of pakVfs.allFilePaths()) {
+      for (const filePath of pakPaths) {
         if (seen.has(filePath.toLowerCase())) continue;
         const ext = extname(filePath).toLowerCase();
         if (ASSET_EXTENSIONS.has(ext)) {
@@ -143,24 +229,19 @@ function buildIndex(basePath: string, gamePath: string): AssetEntry[] {
     logger.warn(`Failed to index pak files: ${e}`);
   }
 
-  // 4. Attach GUIDs to prefab entries
+  // 5. Attach GUIDs to all matched entries (prefabs, layouts, textures, imagesets, fonts)
   if (guidMap && guidMap.size > 0) {
     for (const entry of entries) {
-      if (entry.ext !== "et") continue;
-      // VFS paths include the DataXXX prefix, catalog paths don't — try stripping it
       const pathLower = entry.path.toLowerCase();
-      if (guidMap.has(pathLower)) {
-        entry.guid = guidMap.get(pathLower);
-        continue;
-      }
-      // Strip leading DataXXX/ segment (e.g., "data005/prefabs/..." → "prefabs/...")
-      const slashIdx = pathLower.indexOf("/");
-      if (slashIdx !== -1) {
-        const stripped = pathLower.slice(slashIdx + 1);
-        if (guidMap.has(stripped)) {
-          entry.guid = guidMap.get(stripped);
+      let g = guidMap.get(pathLower) ?? null;
+      if (!g) {
+        // Loose paths may include a base data segment catalogs don't (e.g. DataXXX/data005)
+        const slashIdx = pathLower.indexOf("/");
+        if (slashIdx !== -1) {
+          g = guidMap.get(pathLower.slice(slashIdx + 1)) ?? null;
         }
       }
+      if (g) entry.guid = g;
     }
   }
 
@@ -192,7 +273,8 @@ export function registerAssetSearch(server: McpServer, config: Config): void {
       description:
         "Search for base game assets (prefabs, models, textures, scripts, configs) by name. " +
         "Searches both unpacked files and .pak archives transparently. " +
-        "Returns file paths and GUIDs (for prefabs) that can be used in prefab references. " +
+        "Returns file paths and GUIDs (prefabs, layouts, textures, imagesets, fonts — mined from " +
+        "packed entity catalogs and UI references) that can be used in resource references. " +
         "The first search may take a few seconds to build the file index.",
       inputSchema: {
         query: z
@@ -284,10 +366,7 @@ export function registerAssetSearch(server: McpServer, config: Config): void {
 
         for (const { entry } of shown) {
           if (entry.guid) {
-            // Strip DataXXX/ prefix from display path to match the catalog's relative path
-            const slashIdx = entry.path.indexOf("/");
-            const displayPath = slashIdx !== -1 ? entry.path.slice(slashIdx + 1) : entry.path;
-            lines.push(`  {${entry.guid}}${displayPath}`);
+            lines.push(`  {${entry.guid}}${entry.path}`);
           } else {
             lines.push(`  ${entry.path}`);
           }

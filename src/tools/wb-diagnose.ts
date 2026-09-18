@@ -49,7 +49,10 @@ export function registerWbDiagnose(server: McpServer, client: WorkbenchClient): 
         lines.push("- **Installed in mods:** none found — handlers not injected into any mod");
       } else {
         for (const m of r.installedMods) {
-          lines.push(`- **Installed:** ${m.fileCount} .c files → \`${m.handlerDir}\``);
+          const modStatus = m.hasScriptsModule
+            ? "OK"
+            : "MISSING Modules { \"scripts\" } — handlers won't compile!";
+          lines.push(`- **Installed:** ${m.fileCount} .c files [${modStatus}] → \`${m.handlerDir}\``);
         }
       }
 
@@ -99,6 +102,14 @@ export function registerWbDiagnose(server: McpServer, client: WorkbenchClient): 
         problems.push(
           "NET API is up but no handler scripts are installed anywhere. " +
             "Call wb_launch with a gprojPath to inject handlers into the correct mod."
+        );
+      }
+      const modsWithoutModules = r.installedMods.filter(m => !m.hasScriptsModule);
+      if (modsWithoutModules.length > 0 && r.netApi === "up_no_handlers") {
+        problems.push(
+          `Handler scripts are installed but mod .gproj files are missing Modules { "scripts" }. ` +
+          `Workbench cannot compile the handlers. Add \`Modules { "scripts" }\` to: ` +
+          modsWithoutModules.map(m => `\`${m.modDir}\``).join(", ")
         );
       }
 

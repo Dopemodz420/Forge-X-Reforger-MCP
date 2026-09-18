@@ -6,12 +6,13 @@ import {
   mkdirSync,
   existsSync,
 } from "node:fs";
-import { dirname } from "node:path";
+import { dirname, extname } from "node:path";
 import type { Config } from "../config.js";
 import type { WorkbenchClient } from "../workbench/client.js";
 import { validateProjectPath } from "../utils/safe-path.js";
 import { resolveGameDataPath, findLooseFile, resolveAddonDir } from "../utils/game-paths.js";
 import { generateGuid } from "../formats/guid.js";
+import { PakVirtualFS } from "../pak/vfs.js";
 import {
   walkChain,
   mergeAncestryComponents,
@@ -97,7 +98,25 @@ export function registerGameDuplicate(
         if (sourceFile) sourceLabel = "(pak loose files)";
       }
 
+      // Fall through to pak VFS if no loose file found
+      let pakContent: string | null = null;
       if (!sourceFile) {
+        try {
+          const pakVfs = PakVirtualFS.get(config.gamePath);
+          if (pakVfs && pakVfs.exists(bareSourcePath)) {
+            const ext = extname(bareSourcePath).toLowerCase();
+            const TEXT_EXTS = new Set([".et", ".conf", ".c", ".layout", ".ent", ".layer", ".st"]);
+            if (TEXT_EXTS.has(ext)) {
+              pakContent = pakVfs.readTextFile(bareSourcePath);
+              sourceLabel = "(from .pak)";
+            }
+          }
+        } catch {
+          // Fall through to error
+        }
+      }
+
+      if (!sourceFile && !pakContent) {
         return {
           content: [
             {
@@ -105,7 +124,8 @@ export function registerGameDuplicate(
               text: `Source file not found: ${bareSourcePath}\n` +
                 (config.extractedPath ? `Searched extracted library: ${config.extractedPath}\n` : "") +
                 `Searched pak loose files under: ${config.gamePath}\n` +
-                `Use asset_search to verify the path exists.`,
+                `Searched .pak archives\n` +
+                `Use game_search to find the correct path.`,
             },
           ],
           isError: true,
@@ -150,12 +170,21 @@ export function registerGameDuplicate(
 
       // Read source content
       let rawContent: string;
-      try {
-        rawContent = readFileSync(sourceFile, "utf-8");
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
+      if (pakContent) {
+        rawContent = pakContent;
+      } else if (sourceFile) {
+        try {
+          rawContent = readFileSync(sourceFile, "utf-8");
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return {
+            content: [{ type: "text", text: `Failed to read source file: ${msg}` }],
+            isError: true,
+          };
+        }
+      } else {
         return {
-          content: [{ type: "text", text: `Failed to read source file: ${msg}` }],
+          content: [{ type: "text", text: `No source content available for: ${bareSourcePath}` }],
           isError: true,
         };
       }
@@ -284,7 +313,7 @@ export function registerGameDuplicate(
                 text: [
                   `**Prefab duplicated successfully**`,
                   `- Source: ${sourcePath}`,
-                  `- Copied from: ${sourceFile} ${sourceLabel}`,
+                  `- Copied from: ${sourceFile ?? bareSourcePath} ${sourceLabel}`,
                   `- Saved to: ${absDestPath}`,
                   ``,
                   guidNote,
