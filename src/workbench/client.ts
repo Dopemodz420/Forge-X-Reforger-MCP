@@ -127,7 +127,26 @@ export class WorkbenchClient {
             this.extractMode(result);
             return result;
           }
-          if (err.code === "API_ERROR" && err.message.includes("Undefined API func")) {
+          if (err.code === "API_ERROR" && /not existing|Undefined API func/i.test(err.message)) {
+            // Try bootstrap fallback first (WorkbenchGameCommon handlers that work at launcher without WorldEditor).
+            // Distinct class names (PingBootstrap) avoid duplicate-class when both modules are active.
+            const bootstrapMap: Record<string, string> = {
+              EMCP_WB_Ping: "EMCP_WB_PingBootstrap",
+              EMCP_WB_GetState: "EMCP_WB_GetStateBootstrap",
+            };
+            const bootstrap = bootstrapMap[apiFunc];
+            if (bootstrap) {
+              try {
+                const result = await this.rawCall<T>(bootstrap, params, { ...options, skipAutoLaunch: true });
+                this._state.connected = true;
+                this._state.lastUpdated = Date.now();
+                this.extractMode(result);
+                logger.info(`Served via bootstrap handler ${bootstrap} (launcher mode)`);
+                return result;
+              } catch {
+                // bootstrap not available — fall through to recovery
+              }
+            }
             // Workbench is running but our custom handler scripts aren't compiled.
             // This happens when the user opened Workbench manually, or when handlers
             // were cleaned up but Workbench kept running.
@@ -197,7 +216,17 @@ export class WorkbenchClient {
     try {
       await this.rawCall("EMCP_WB_Ping", {}, { timeout: 3000, skipAutoLaunch: true });
       return true;
-    } catch {
+    } catch (e) {
+      // Fallback to bootstrap ping (WorkbenchGameCommon) which loads at launcher without WorldEditor.
+      // Distinct class name avoids duplicate-class when both modules are active.
+      if (e instanceof WorkbenchError && e.code === "API_ERROR" && /not existing/i.test(e.message)) {
+        try {
+          await this.rawCall("EMCP_WB_PingBootstrap", {}, { timeout: 3000, skipAutoLaunch: true });
+          return true;
+        } catch {
+          return false;
+        }
+      }
       return false;
     }
   }
@@ -210,24 +239,31 @@ export class WorkbenchClient {
    */
   cleanupHandlerScripts(modDir: string): boolean {
     const handlerDir = resolve(modDir, "Scripts", "WorkbenchGame", HANDLER_FOLDER);
-    logger.info(`Checking for handler scripts at: ${handlerDir}`);
-    if (!existsSync(handlerDir)) {
+    const bootstrapDir = resolve(modDir, "Scripts", "WorkbenchGameCommon", HANDLER_FOLDER);
+    let cleaned = false;
+    for (const dir of [handlerDir, bootstrapDir]) {
+      if (!existsSync(dir)) continue;
+      try {
+        rmSync(dir, { recursive: true, force: true });
+        logger.info(`Removed handler scripts from ${dir}`);
+        cleaned = true;
+      } catch (e) {
+        logger.warn(`Failed to clean up handler scripts at ${dir}: ${e}`);
+      }
+    }
+    if (!cleaned) {
       logger.info(`Handler scripts not found at ${handlerDir}`);
       return false;
     }
-    try {
-      rmSync(handlerDir, { recursive: true, force: true });
-      logger.info(`Removed handler scripts from ${handlerDir}`);
-      // Clean up empty parent dirs
-      const wbGameDir = join(modDir, "Scripts", "WorkbenchGame");
-      if (existsSync(wbGameDir) && readdirSync(wbGameDir).length === 0) {
-        rmSync(wbGameDir);
-      }
-      return true;
-    } catch (e) {
-      logger.warn(`Failed to clean up handler scripts: ${e}`);
-      return false;
+    // Clean up empty parent dirs
+    for (const wbDir of [join(modDir, "Scripts", "WorkbenchGame"), join(modDir, "Scripts", "WorkbenchGameCommon")]) {
+      try {
+        if (existsSync(wbDir) && readdirSync(wbDir).length === 0) {
+          rmSync(wbDir);
+        }
+      } catch { /* ignore */ }
     }
+    return true;
   }
 
   /**
@@ -305,13 +341,32 @@ export class WorkbenchClient {
       await this.rawCall("EMCP_WB_Ping", {}, { timeout: 3000, skipAutoLaunch: true });
       netApi = "up_with_handlers";
     } catch (err) {
-      if (err instanceof WorkbenchError) {
+      // Fallback to bootstrap ping (WorkbenchGameCommon) which works at launcher without WorldEditor
+      if (err instanceof WorkbenchError && err.code === "API_ERROR" && /not existing/i.test(err.message)) {
+        try {
+          await this.rawCall("EMCP_WB_PingBootstrap", {}, { timeout: 3000, skipAutoLaunch: true });
+          netApi = "up_with_handlers";
+          netApiError = undefined;
+        } catch (e2) {
+          if (e2 instanceof WorkbenchError) {
+            netApiError = e2.message;
+            if (e2.code === "API_ERROR" && /not existing/i.test(e2.message)) {
+              netApi = "up_no_handlers";
+            } else {
+              netApi = "error";
+            }
+          } else {
+            netApi = "error";
+            netApiError = String(e2);
+          }
+        }
+      } else if (err instanceof WorkbenchError) {
         netApiError = err.message;
         if (err.code === "CONNECTION_REFUSED") {
           netApi = "refused";
         } else if (err.code === "TIMEOUT") {
           netApi = "timeout";
-        } else if (err.code === "API_ERROR" && err.message.includes("not existing Net API function")) {
+        } else if (err.code === "API_ERROR" && /not existing/i.test(err.message)) {
           netApi = "up_no_handlers";
         } else {
           netApi = "error";
@@ -390,18 +445,28 @@ export class WorkbenchClient {
       throw new WorkbenchError("No config provided — cannot recover handlers.", "LAUNCH_FAILED");
     }
 
-    // Inject into the currently-open mod (same logic as launchWorkbench).
-    const recoveryGproj = this.findFallbackGproj();
-    if (recoveryGproj && this.gprojHasScriptsModule(recoveryGproj)) {
-      this.installHandlerScripts(dirname(recoveryGproj), true);
-      this.cleanupStandaloneAddon();
-    } else {
-      if (recoveryGproj) {
-        logger.warn(
-          `Recovery mod .gproj missing Modules { "scripts" }: ${recoveryGproj}. ` +
-          `Handlers cannot compile in this mod.`
-        );
+    // Inject into the currently-open mod — respect explicit lastProject/defaultMod, not just alphabetical fallback.
+    // Priority: lastProject (user's last wb_launch) > findFallbackGproj (most-recent real mod)
+    const recoveryGproj = loadLastProject() || this.findFallbackGproj();
+    if (recoveryGproj) {
+      // Auto-patch missing Modules { "scripts" } so handlers can compile in the user's real mod
+      // instead of silently falling back to the standalone EnfusionMCP addon.
+      if (!this.gprojHasScriptsModule(recoveryGproj)) {
+        logger.info(`Patching recovery gproj to add Modules { "scripts" }: ${recoveryGproj}`);
+        this.ensureGprojHasScriptsModule(recoveryGproj);
       }
+      if (this.gprojHasScriptsModule(recoveryGproj)) {
+        this.installHandlerScripts(dirname(recoveryGproj), true);
+        this.cleanupStandaloneAddon();
+      } else {
+        logger.warn(
+          `Recovery mod .gproj still missing Modules { "scripts" } after patch: ${recoveryGproj}. ` +
+          `Falling back to standalone handler addon.`
+        );
+        this.installHandlerScripts(undefined, true);
+      }
+    } else {
+      logger.warn("No recovery gproj found — installing standalone handler addon");
       this.installHandlerScripts(undefined, true);
     }
 
@@ -461,21 +526,28 @@ export class WorkbenchClient {
       // Check if the mod's .gproj declares Modules { "scripts" }.
       // Without it, Workbench skips script compilation and our handler scripts
       // (NetApiHandler subclasses) are never registered with the NET API.
+      // GREATEST UX: auto-patch the gproj instead of silently hijacking EnfusionMCP.
       if (!this.gprojHasScriptsModule(resolvedGproj)) {
-        logger.warn(
-          `Mod .gproj missing Modules { "scripts" }: ${resolvedGproj}. ` +
-          `Handler scripts won't compile. Falling back to standalone addon.`
-        );
-        resolvedGproj = null;
-      } else {
+        logger.info(`Patching ${resolvedGproj} to add Modules { "scripts" } so handlers can compile in your mod`);
+        this.ensureGprojHasScriptsModule(resolvedGproj);
+      }
+      if (this.gprojHasScriptsModule(resolvedGproj)) {
         this.installHandlerScripts(dirname(resolvedGproj));
         // Remove any leftover standalone addon to prevent duplicate class errors.
         this.cleanupStandaloneAddon();
+      } else {
+        logger.warn(
+          `Mod .gproj still missing Modules { "scripts" } after patch: ${resolvedGproj}. ` +
+          `Falling back to standalone addon.`
+        );
+        resolvedGproj = null;
       }
     }
     if (!resolvedGproj) {
-      // No project found or mod lacks Modules — use standalone addon.
-      // Open it directly so its handlers compile (user's project won't be open).
+      // No project found after patch attempt — use standalone addon as absolute last resort.
+      // This only happens when projectPath is empty or every gproj is unpatchable.
+      // The standalone addon is intentionally excluded from fallback scans and state.
+      logger.warn("No valid project gproj found — falling back to standalone EnfusionMCP handler addon (last resort)");
       this.installHandlerScripts();
       const fallbackBase = this.config?.projectPath;
       if (fallbackBase) {
@@ -590,19 +662,71 @@ export class WorkbenchClient {
    * Check if a .gproj file declares Modules { "scripts" }.
    * Without this, Workbench skips script compilation and handler scripts
    * (NetApiHandler subclasses) are never registered with the NET API.
+   * Handles both Enfusion text format (Modules { "scripts" }) and JSON format ("modules": ["scripts"]).
    */
   private gprojHasScriptsModule(gprojPath: string): boolean {
     try {
       const content = readFileSync(gprojPath, "utf-8");
-      return /Modules\s*\{[^}]*"scripts"/.test(content);
+      // Enfusion text format
+      if (/Modules\s*\{[^}]*"scripts"/.test(content)) return true;
+      // JSON format (e.g. Party-GroupSystem addon.gproj)
+      if (/"modules"\s*:\s*\[[^\]]*"scripts"/i.test(content)) return true;
+      return false;
     } catch {
       return false;
     }
   }
 
   /**
+   * Ensure a .gproj declares Modules { "scripts" } so handler scripts can compile.
+   * If missing, patches the file in-place (creates backup-like idempotent insert).
+   * Returns true if the file now has the module (was present or was patched).
+   */
+  private ensureGprojHasScriptsModule(gprojPath: string): boolean {
+    if (this.gprojHasScriptsModule(gprojPath)) return true;
+    try {
+      let content = readFileSync(gprojPath, "utf-8");
+      // JSON format (Party-GroupSystem etc.)
+      if (content.trim().startsWith("{")) {
+        try {
+          const json = JSON.parse(content);
+          if (Array.isArray(json.modules) && json.modules.includes("scripts")) return true;
+          json.modules = Array.isArray(json.modules) ? [...json.modules, "scripts"] : ["scripts"];
+          writeFileSync(gprojPath, JSON.stringify(json, null, 2), "utf-8");
+          logger.info(`Patched JSON ${gprojPath} to add "scripts" to modules`);
+          return true;
+        } catch { /* fall through to text handling */ }
+      }
+      // If a Modules block exists but lacks "scripts", inject it
+      if (/Modules\s*\{/.test(content)) {
+        content = content.replace(/Modules\s*\{([^}]*)\}/, (_m, inner: string) => {
+          const trimmed = inner.trim();
+          const needsComma = trimmed.length > 0 && !trimmed.endsWith(",");
+          return `Modules {\n  ${trimmed}${needsComma ? "," : ""}${trimmed ? " " : ""}"scripts"\n }`;
+        });
+      } else if (/Dependencies\s*\{[^}]*\}/.test(content)) {
+        // Insert Modules block right after Dependencies
+        content = content.replace(/(Dependencies\s*\{[^}]*\})/, `$1\n Modules {\n  "scripts"\n }`);
+      } else if (/GameProject\s*\{/.test(content)) {
+        // Fallback: insert after opening GameProject {
+        content = content.replace(/(GameProject\s*\{)/, `$1\n Modules {\n  "scripts"\n }`);
+      } else {
+        return false;
+      }
+      writeFileSync(gprojPath, content, "utf-8");
+      logger.info(`Patched ${gprojPath} to add Modules { "scripts" } so EnfusionMCP handlers can compile`);
+      return true;
+    } catch (e) {
+      logger.warn(`Failed to patch ${gprojPath} with Modules { "scripts" }: ${e}`);
+      return false;
+    }
+  }
+
+  /**
    * Find a .gproj to pass via -gproj so Workbench skips the launcher.
-   * Prefers config.defaultMod if set; otherwise picks first addon found.
+   * Prefers config.defaultMod if set; otherwise picks the most-recently-modified
+   * addon that already has Modules { "scripts" }. Skips the internal EnfusionMCP
+   * standalone addon so it never hijacks the default project.
    * Scans for any .gproj in each addon folder (name need not match folder).
    */
   private findFallbackGproj(): string | null {
@@ -621,9 +745,9 @@ export class WorkbenchClient {
       const addonsDir = this.config?.projectPath;
       if (!addonsDir || !existsSync(addonsDir)) return null;
 
-      // Prefer the configured default mod over alphabetical first-pick
+      // Prefer the configured default mod over scan
       const preferred = this.config?.defaultMod;
-      if (preferred) {
+      if (preferred && preferred !== HANDLER_FOLDER) {
         const gprojPath = findGprojInDir(join(addonsDir, preferred));
         if (gprojPath) {
           logger.info(`Using defaultMod gproj to skip launcher: ${gprojPath}`);
@@ -631,14 +755,32 @@ export class WorkbenchClient {
         }
       }
 
+      // Gather all candidates, explicitly skipping the internal handler addon
+      type Candidate = { gprojPath: string; mtime: number; hasScripts: boolean };
+      const candidates: Candidate[] = [];
       for (const entry of readdirSync(addonsDir, { withFileTypes: true })) {
         if (!entry.isDirectory()) continue;
+        if (entry.name === HANDLER_FOLDER) continue; // never auto-pick the internal addon
+        // Skip obvious non-mod dirs (exports, etc.) that lack a .gproj — findGprojInDir will return null
         const gprojPath = findGprojInDir(join(addonsDir, entry.name));
-        if (gprojPath) {
-          logger.info(`Using fallback gproj to skip launcher: ${gprojPath}`);
-          return gprojPath;
-        }
+        if (!gprojPath) continue;
+        // Use mtime to prefer the mod the user touched most recently
+        let mtime = 0;
+        try { mtime = require("node:fs").statSync(gprojPath).mtimeMs; } catch { /* ignore */ }
+        const hasScripts = this.gprojHasScriptsModule(gprojPath);
+        candidates.push({ gprojPath, mtime, hasScripts });
       }
+
+      if (candidates.length === 0) return null;
+
+      // Prefer candidates that already have Modules { "scripts" } — they can compile handlers immediately
+      const withScripts = candidates.filter(c => c.hasScripts);
+      const pool = withScripts.length > 0 ? withScripts : candidates;
+      // Most recently modified first
+      pool.sort((a, b) => b.mtime - a.mtime);
+      const chosen = pool[0];
+      logger.info(`Using fallback gproj to skip launcher: ${chosen.gprojPath} (hasScripts=${chosen.hasScripts})`);
+      return chosen.gprojPath;
     } catch { /* ignore */ }
     return null;
   }
@@ -685,11 +827,16 @@ export class WorkbenchClient {
 
   /**
    * Copy handler scripts into a mod directory so they compile as part of that mod.
+   * Installs WorkbenchGame handlers (full entity/world tools) plus WorkbenchGameCommon
+   * bootstrap handlers (Ping/GetState that work at launcher without WorldEditor).
+   * The bootstrap uses distinct class names (EMCP_WB_PingBootstrap) to avoid
+   * duplicate-class compile when both modules are active.
    * If no modDir given, installs to default project path (standalone, less useful).
    */
   private installHandlerScripts(modDir?: string, force = false): void {
     const packageRoot = resolve(dirname(fileURLToPath(import.meta.url)), "..", "..");
     const bundledDir = join(packageRoot, "mod", "Scripts", "WorkbenchGame", HANDLER_FOLDER);
+    const bundledBootstrapDir = join(packageRoot, "mod", "Scripts", "WorkbenchGameCommon", HANDLER_FOLDER);
     if (!existsSync(bundledDir)) {
       logger.warn("Bundled handler scripts not found in package.");
       return;
@@ -726,6 +873,23 @@ export class WorkbenchClient {
     }
 
     logger.info(`Installed ${files.length} handler scripts.`);
+
+    // Also install bootstrap handlers to WorkbenchGameCommon (launcher-safe Ping/GetState).
+    // Distinct class names (EMCP_WB_PingBootstrap) guarantee no duplicate-class when both modules are active.
+    if (existsSync(bundledBootstrapDir)) {
+      const targetBootstrapDir = join(targetBase, "Scripts", "WorkbenchGameCommon", HANDLER_FOLDER);
+      try {
+        mkdirSync(targetBootstrapDir, { recursive: true });
+        const bootFiles = readdirSync(bundledBootstrapDir).filter((f) => f.endsWith(".c"));
+        for (const file of bootFiles) {
+          copyFileSync(join(bundledBootstrapDir, file), join(targetBootstrapDir, file));
+        }
+        logger.info(`Installed ${bootFiles.length} bootstrap handlers to ${targetBootstrapDir}`);
+      } catch (e) {
+        logger.warn(`Failed to install bootstrap handlers: ${e}`);
+        // Non-fatal — main handlers still installed
+      }
+    }
 
     // When using the standalone fallback path, also write a .gproj so Workbench
     // treats the directory as a loadable addon and compiles the handler scripts.

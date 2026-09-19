@@ -147,6 +147,11 @@ const STATE_FILE = resolve(
 
 /** Save the last-opened .gproj path so wb_launch can reopen it next time. */
 export function saveLastProject(gprojPath: string): void {
+  // Never persist the internal EnfusionMCP standalone addon — it should never hijack the default project
+  if (gprojPath.includes("EnfusionMCP")) {
+    logger.debug(`Skipping saveLastProject for internal handler addon: ${gprojPath}`);
+    return;
+  }
   try {
     const dir = dirname(STATE_FILE);
     if (!existsSync(dir)) {
@@ -165,6 +170,11 @@ export function loadLastProject(): string | null {
     if (!existsSync(STATE_FILE)) return null;
     const data = JSON.parse(readFileSync(STATE_FILE, "utf-8"));
     if (data.lastProject && existsSync(data.lastProject)) {
+      // Ignore stale standalone handler addon — it was the fallback before the fix and hijacks every launch
+      if (data.lastProject.includes("EnfusionMCP")) {
+        logger.info(`Ignoring stale lastProject pointing at EnfusionMCP: ${data.lastProject}`);
+        return null;
+      }
       return data.lastProject;
     }
   } catch { /* ignore */ }
