@@ -63,6 +63,15 @@ export interface WorkbenchCallOptions {
   timeout?: number;
   /** Skip auto-launch on connection failure (used internally by ping). */
   skipAutoLaunch?: boolean;
+  /**
+   * Return a `status: "error"` response instead of throwing.
+   *
+   * Only for calls whose failure is genuinely optional — a secondary lookup the
+   * caller degrades gracefully around (e.g. reading a position to enrich a result
+   * that is still useful without it). Never use it for the primary action of a
+   * tool: that is exactly how a failed mutation gets reported as success.
+   */
+  tolerateErrorStatus?: boolean;
 }
 
 export class WorkbenchError extends Error {
@@ -106,11 +115,7 @@ export class WorkbenchClient {
     options: WorkbenchCallOptions = {}
   ): Promise<T> {
     try {
-      const result = await this.rawCall<T>(apiFunc, params, options);
-      this._state.connected = true;
-      this._state.lastUpdated = Date.now();
-      this.extractMode(result);
-      return result;
+      return this.finishCall(await this.rawCall<T>(apiFunc, params, options), options);
     } catch (err) {
       if (err instanceof WorkbenchError) {
         if (err.code === "CONNECTION_REFUSED" || err.code === "TIMEOUT" || err.code === "PROTOCOL_ERROR") {
@@ -121,11 +126,7 @@ export class WorkbenchClient {
             // Workbench not running — install handlers, launch, retry
             logger.info(`Workbench not running, auto-launching...`);
             await this.ensureRunning();
-            const result = await this.rawCall<T>(apiFunc, params, options);
-            this._state.connected = true;
-            this._state.lastUpdated = Date.now();
-            this.extractMode(result);
-            return result;
+            return this.finishCall(await this.rawCall<T>(apiFunc, params, options), options);
           }
           if (err.code === "API_ERROR" && /not existing|Undefined API func/i.test(err.message)) {
             // Try bootstrap fallback first (WorkbenchGameCommon handlers that work at launcher without WorldEditor).
@@ -137,12 +138,10 @@ export class WorkbenchClient {
             const bootstrap = bootstrapMap[apiFunc];
             if (bootstrap) {
               try {
-                const result = await this.rawCall<T>(bootstrap, params, { ...options, skipAutoLaunch: true });
-                this._state.connected = true;
-                this._state.lastUpdated = Date.now();
-                this.extractMode(result);
-                logger.info(`Served via bootstrap handler ${bootstrap} (launcher mode)`);
-                return result;
+                return this.finishCall(
+                  await this.rawCall<T>(bootstrap, params, { ...options, skipAutoLaunch: true }),
+                  options
+                );
               } catch {
                 // bootstrap not available — fall through to recovery
               }
@@ -152,16 +151,59 @@ export class WorkbenchClient {
             // were cleaned up but Workbench kept running.
             logger.info(`Handler scripts not loaded in Workbench, recovering...`);
             await this.recoverMissingHandlers();
-            const result = await this.rawCall<T>(apiFunc, params, options);
-            this._state.connected = true;
-            this._state.lastUpdated = Date.now();
-            this.extractMode(result);
-            return result;
+            try {
+              return this.finishCall(await this.rawCall<T>(apiFunc, params, options), options);
+            } catch (retryErr) {
+              // Still not registered after reinstall + recompile → new handler class requires restart.
+              // Workbench builds NET API dispatch table at process start.
+              if (
+                retryErr instanceof WorkbenchError &&
+                /not existing|Undefined API func/i.test(retryErr.message)
+              ) {
+                throw new WorkbenchError(
+                  `Workbench does not expose "${apiFunc}" even after reinstalling and ` +
+                    `recompiling the handler scripts. Workbench registers NET API handlers ` +
+                    `when the process starts, so a handler class that is new since Workbench ` +
+                    `launched will not appear until Workbench is restarted — the script ` +
+                    `compiles cleanly and the other handlers keep working, so this does not ` +
+                    `look like a registration problem. Restart Workbench, then retry.`,
+                  "API_ERROR"
+                );
+              }
+              throw retryErr;
+            }
           }
         }
       }
       throw err;
     }
+  }
+
+  /**
+   * Record connection state from a successful transport round-trip, then surface an
+   * in-band handler failure as a thrown error.
+   *
+   * The NET API returns transport-level "Ok" even when the handler itself failed —
+   * 18 of the Enforce handlers report failure in-band by setting `status: "error"`.
+   * Every return path in call() goes through here so a retry path cannot skip it.
+   */
+  private finishCall<T>(result: T, options: WorkbenchCallOptions): T {
+    this._state.connected = true;
+    this._state.lastUpdated = Date.now();
+    this.extractMode(result);
+
+    if (!options.tolerateErrorStatus) {
+      const record = result as unknown as Record<string, unknown> | null;
+      if (record && record.status === "error") {
+        const message =
+          typeof record.message === "string" && record.message.trim() !== ""
+            ? record.message
+            : "Workbench handler reported an error without a message.";
+        throw new WorkbenchError(message, "API_ERROR");
+      }
+    }
+
+    return result;
   }
 
   /**
