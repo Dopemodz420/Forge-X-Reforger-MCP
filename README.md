@@ -4,11 +4,11 @@
 
 Describe what you want to build — your AI agent handles API research, code generation, project scaffolding, Workbench control, and in-editor testing. Works with **any MCP-compatible agent**: Cursor, Google Antigravity, Claude Desktop, Claude Code, Kiro, Windsurf, VS Code Copilot, Continue.dev, and OpenCode.
 
-> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) and [wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp) with permission. Forge-X adds 47 new tools, Workbench lifecycle hardening (`EMCP_WB_Ping`/`GetState` bootstrap, `wb_reload safe`, `finishCall`), `wb_diagnose_leak`, export-VFS boost, script/index/world/logs/server/faction depth, and ongoing maintenance as an independent project.
+> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) and [wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp) with permission. Forge-X adds 49 new tools, Workbench lifecycle hardening (`EMCP_WB_Ping`/`GetState` bootstrap, `wb_reload safe`, `finishCall`), `wb_diagnose_leak`, export-VFS boost, script/index/world/logs/server/faction/scenario/weapon depth, and ongoing maintenance as an independent project.
 
 ## Features
 
-- **100 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control (53 → 100, +47: layout_validate, string_table, project_search/diff/references/stats/batch/export/template/migrate, prefab_diff, mod_compat, config_validate, project_scaffold_ui, resolve_guid, script_analyze/lint, wb_validate_scripts, wb_diagnose_leak, project_index_status, inheritance_chain, find_broken_refs, find_unused_resources, script_overrides, script_find_rpc, script_class_hierarchy, wb_search_resources, wb_current_project, wb_generate_guid, wb_is_workbench_running, logs_list, logs_tail, logs_filter, logs_summarize_errors, world_compose_summary, world_diff, world_validate_refs, terrain_navmesh_status, terrain_road_export_graph, faction_create, faction_list_units, scenario_inspect, scenario_diff, scenario_clone_area, animation_find_unused_clips, server_mod_list, server_health_probe)
+- **102 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control (53 → 102, +49: layout_validate, string_table, project_search/diff/references/stats/batch/export/template/migrate, prefab_diff, mod_compat, config_validate, project_scaffold_ui, resolve_guid, script_analyze/lint, wb_validate_scripts, wb_diagnose_leak, project_index_status, inheritance_chain, find_broken_refs, find_unused_resources, script_overrides, script_find_rpc, script_class_hierarchy, wb_search_resources, wb_current_project, wb_generate_guid, wb_is_workbench_running, logs_list, logs_tail, logs_filter, logs_summarize_errors, world_compose_summary, world_diff, world_validate_refs, terrain_navmesh_status, terrain_road_export_graph, faction_create, faction_list_units, scenario_inspect, scenario_diff, scenario_clone_area, scenario_apply_template, weapon_pose_lint, animation_find_unused_clips, server_mod_list, server_health_probe)
 - **8,693 indexed API classes** — full Enfusion/Arma Reforger class hierarchy
 - **250+ wiki guides** — searchable tutorials and documentation
 - **Agent-agnostic** — one server, install script for every major AI IDE
@@ -42,7 +42,7 @@ Then install into your agent(s):
 .\scripts\install-agents.ps1 -Agent cursor
 ```
 
-Restart your agent and verify **forge-x-reforger-mcp** (or `forge-x`) shows **100 tools**.
+Restart your agent and verify **forge-x-reforger-mcp** (or `forge-x`) shows **102 tools**.
 
 ### Configure paths
 
@@ -161,7 +161,7 @@ Use the stdio template at `configs/agents/stdio-template.json`. Replace `REPLACE
 
 ---
 
-## Complete Tool Reference (100 tools)
+## Complete Tool Reference (102 tools)
 
 Legend: **Offline** = no Workbench needed | **Live** = requires Workbench running (`wb_launch`)
 
@@ -269,7 +269,7 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | `wb_script_editor` | Read/write lines in the open Script Editor file — get file, read/write/insert/remove lines, line count. |
 | `wb_validate` | Validate material or texture resources using Workbench built-in validators. Returns errors and warnings. |
 
-Run `node scripts/list-tools.mjs` anytime to verify all 100 tools register on your machine.
+Run `node scripts/list-tools.mjs` anytime to verify all 102 tools register on your machine.
 
 ---
 
@@ -384,7 +384,7 @@ npm install && npm run build && node scripts/list-tools.mjs
 npm run build                  # Compile TypeScript
 npm test                       # Run test suite (453 passed, 12 skipped)
 npm run dev                    # Run server in dev mode
-node scripts/list-tools.mjs    # Verify all 100 tools register
+node scripts/list-tools.mjs    # Verify all 102 tools register
 .\scripts\install-agents.ps1 -All   # Push config to all agents
 ```
 
