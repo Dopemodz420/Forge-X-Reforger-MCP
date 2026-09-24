@@ -46,6 +46,8 @@ import { registerProjectIndexExtended } from "./tools/project-index-extended.js"
 import { registerScriptExtended } from "./tools/script-extended.js";
 import { registerWbExtended } from "./tools/wb-extended.js";
 import { registerLogsWorld } from "./tools/logs-world.js";
+import { registerFactionScenario } from "./tools/faction-scenario.js";
+import { registerRemainingGap } from "./tools/remaining-gap.js";
 import { registerGameBrowse } from "./tools/game-browse.js";
 import { registerGameRead } from "./tools/game-read.js";
 import { registerAssetSearch } from "./tools/asset-search.js";
@@ -155,6 +157,8 @@ export function registerTools(server: McpServer, config: Config): void {
   registerScriptExtended(server, config);
   registerWbExtended(server, wbClient);
   registerLogsWorld(server, config, wbClient);
+  registerFactionScenario(server, config);
+  registerRemainingGap(server, config, wbClient);
   registerScenarioCreate(server, config);
 
   // Base game access tools
