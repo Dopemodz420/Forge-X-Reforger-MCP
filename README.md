@@ -4,11 +4,11 @@
 
 Describe what you want to build — your AI agent handles API research, code generation, project scaffolding, Workbench control, and in-editor testing. Works with **any MCP-compatible agent**: Cursor, Google Antigravity, Claude Desktop, Claude Code, Kiro, Windsurf, VS Code Copilot, Continue.dev, and OpenCode.
 
-> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) and [wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp) with permission. Forge-X adds 14 new tools, Workbench bridge fix (`EMCP_WB_Ping`), export-VFS boost, and ongoing maintenance as an independent project.
+> Forked from [steffenbk/enfusion-mcp-BK](https://github.com/steffenbk/enfusion-mcp-BK) and [wastelandgoats/reforger-forge-mcp](https://github.com/wastelandgoats/reforger-forge-mcp) with permission. Forge-X adds 19 new tools, Workbench lifecycle hardening (`EMCP_WB_Ping`/`GetState` bootstrap, `wb_reload safe`, `finishCall`), `wb_diagnose_leak`, export-VFS boost, and ongoing maintenance as an independent project.
 
 ## Features
 
-- **67 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control (53 → 67, +14 new: layout_validate, string_table, project_search/diff/references/stats/batch/export/template/migrate, prefab_diff, mod_compat, config_validate, project_scaffold_ui)
+- **72 MCP tools** — API search, wiki, asset browsing, code generation, Workbench live control (53 → 72, +19: layout_validate, string_table, project_search/diff/references/stats/batch/export/template/migrate, prefab_diff, mod_compat, config_validate, project_scaffold_ui, resolve_guid, script_analyze/lint, wb_validate_scripts, wb_diagnose_leak)
 - **8,693 indexed API classes** — full Enfusion/Arma Reforger class hierarchy
 - **250+ wiki guides** — searchable tutorials and documentation
 - **Agent-agnostic** — one server, install script for every major AI IDE
@@ -42,7 +42,7 @@ Then install into your agent(s):
 .\scripts\install-agents.ps1 -Agent cursor
 ```
 
-Restart your agent and verify **forge-x-reforger-mcp** (or `reforger-forge`) shows **67 tools**.
+Restart your agent and verify **forge-x-reforger-mcp** (or `forge-x`) shows **72 tools**.
 
 ### Configure paths
 
@@ -161,7 +161,7 @@ Use the stdio template at `configs/agents/stdio-template.json`. Replace `REPLACE
 
 ---
 
-## Complete Tool Reference (67 tools)
+## Complete Tool Reference (72 tools)
 
 Legend: **Offline** = no Workbench needed | **Live** = requires Workbench running (`wb_launch`)
 
@@ -185,6 +185,7 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | `game_class_info` | Look up class hierarchy — parent chain, subclasses, file location. Scans all scripts across paks and export. |
 | `game_stats` | Diagnostic overview — file counts by type, pak files loaded, VFS index size, export directory status. |
 | `asset_search` | Search game assets (prefabs, models, textures, scripts, configs) by name across loose files and `.pak` archives. Returns paths and GUIDs. |
+| `resolve_guid` | Resolve a 16-hex GUID → defining file, class, and references (project + base game). |
 | `game_duplicate` | Duplicate a base game prefab/config into your mod folder with full ancestor chain resolved. Optionally `flatten=true` to bake all inherited components. Registers with Workbench for a new GUID. |
 | `workshop_info` | Read Workshop metadata from a mod's `.gproj` — mod ID, GUID, title, dependencies, configurations. |
 
@@ -201,6 +202,8 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | Tool | What it does |
 |------|-------------|
 | `script_create` | Generate Enforce Script `.c` files — component, gamemode, action, entity, manager, modded, basic. Auto-fetches overridable parent methods from API index. |
+| `script_analyze` | Parse a `.c` file → AST: classes, modded chains, methods, attributes, includes, `[RPC]`. |
+| `script_lint` | Lint a `.c` file for BI conventions (naming, tabs, line length). |
 | `prefab` | `action=create`: Generate `.et` prefab with components and ancestry. `action=inspect`: Full inheritance chain merge showing which ancestor each component/value comes from. |
 | `layout_create` | Generate UI `.layout` files — hud, menu, dialog, list, custom widget types. |
 | `config_create` | Generate `.conf` files — factions, mission headers, entity catalogs, editor placeables. |
@@ -222,9 +225,11 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | `wb_launch` | Start Arma Reforger Workbench, install handler scripts into mod, wait for NET API. Auto-called by other `wb_*` tools when needed. Call `wb_cleanup` before publishing mod. |
 | `wb_connect` | Test connection to Workbench NET API. Returns connection status and editor mode. |
 | `wb_diagnose` | Full diagnostic — config, handler script locations, NET API status. Use when `wb_launch` or `wb_connect` fails. |
+| `wb_diagnose_leak` | Grep Workbench logs for `Resources are leaking` / `GameApp.cpp:1287` and summarize leaked `UI/layouts`/`*.edds`/`SCR_*`. |
 | `wb_cleanup` | Remove temporary EnfusionMCP handler scripts from mod before publishing. Safe even if never installed. |
 | `wb_state` | Full Workbench snapshot — mode (edit/play), entity count, selection, terrain bounds, sub-scene, prefab edit status. |
-| `wb_reload` | Reload scripts or plugins without restarting Workbench. |
+| `wb_reload` | Reload scripts/plugins with `safe:true` auto-close world to avoid `GameApp.cpp:1287` leak; `wb_validate_scripts` validates without handler. |
+| `wb_validate_scripts` | Validate scripts via builtin `ValidateScripts` (no custom handler, no restart). |
 
 ### Workbench Editor Control (Live)
 
@@ -264,7 +269,7 @@ Legend: **Offline** = no Workbench needed | **Live** = requires Workbench runnin
 | `wb_script_editor` | Read/write lines in the open Script Editor file — get file, read/write/insert/remove lines, line count. |
 | `wb_validate` | Validate material or texture resources using Workbench built-in validators. Returns errors and warnings. |
 
-Run `node scripts/list-tools.mjs` anytime to verify all 67 tools register on your machine.
+Run `node scripts/list-tools.mjs` anytime to verify all 72 tools register on your machine.
 
 ---
 
@@ -377,9 +382,9 @@ npm install && npm run build && node scripts/list-tools.mjs
 
 ```bash
 npm run build                  # Compile TypeScript
-npm test                       # Run test suite (450/453, 3 pre-existing fails)
+npm test                       # Run test suite (453 passed, 12 skipped)
 npm run dev                    # Run server in dev mode
-node scripts/list-tools.mjs    # Verify all 67 tools register
+node scripts/list-tools.mjs    # Verify all 72 tools register
 .\scripts\install-agents.ps1 -All   # Push config to all agents
 ```
 
