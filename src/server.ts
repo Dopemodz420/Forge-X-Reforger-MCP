@@ -42,6 +42,10 @@ import { registerWbValidateScripts } from "./tools/wb-validate-scripts.js";
 import { registerWbState } from "./tools/wb-state.js";
 import { registerResolveGuid } from "./tools/resolve-guid.js";
 import { registerScriptAnalyze } from "./tools/script-analyze.js";
+import { registerProjectIndexExtended } from "./tools/project-index-extended.js";
+import { registerScriptExtended } from "./tools/script-extended.js";
+import { registerWbExtended } from "./tools/wb-extended.js";
+import { registerLogsWorld } from "./tools/logs-world.js";
 import { registerGameBrowse } from "./tools/game-browse.js";
 import { registerGameRead } from "./tools/game-read.js";
 import { registerAssetSearch } from "./tools/asset-search.js";
@@ -147,6 +151,10 @@ export function registerTools(server: McpServer, config: Config): void {
   registerScenarioTools(server, wbClient);
   registerResolveGuid(server, config);
   registerScriptAnalyze(server, config);
+  registerProjectIndexExtended(server, config);
+  registerScriptExtended(server, config);
+  registerWbExtended(server, wbClient);
+  registerLogsWorld(server, config, wbClient);
   registerScenarioCreate(server, config);
 
   // Base game access tools
