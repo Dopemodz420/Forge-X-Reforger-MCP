@@ -108,6 +108,8 @@ class EMCP_WB_ProjectInfo : NetApiHandler
 			if (req.searchStr.Count() > 0)
 				filter.searchStr = req.searchStr;
 
+			// SearchResourcesFilter.recursive defaults to true. Assign unconditionally so
+			// an absent/false value cannot silently turn a deep search into a flat one.
 			filter.recursive = req.recursive;
 
 			array<ResourceName> found = {};

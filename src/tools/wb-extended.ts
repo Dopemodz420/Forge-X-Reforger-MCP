@@ -46,7 +46,11 @@ export function registerWbExtended(server: McpServer, client: WorkbenchClient): 
           rootPath,
           fileExtensions: extensions ?? [],
           searchStr: searchStr ?? [],
-          recursive,
+          // Always send an explicit boolean. SearchResourcesFilter.recursive defaults
+          // to true, but the handler assigns whatever it receives, so an absent key
+          // arrives as false and a non-recursive search silently misses anything
+          // below the root's immediate children.
+          recursive: recursive !== false,
           limit,
         });
 
