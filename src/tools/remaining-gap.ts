@@ -102,18 +102,47 @@ export function registerRemainingGap(server: McpServer, config: Config, client: 
   });
 
   server.registerTool("server_mod_list", {
-    description: "List server mods from server.json or Workshop (offline).",
+    description:
+      "List the mods/addons a dedicated server would load, from its server.json. Offline file read — " +
+      "does not contact a running server.",
     inputSchema: { serverJsonPath: z.string().optional().describe("Path to server.json") }
   }, async ({ serverJsonPath }) => {
     const p = serverJsonPath || join(config.projectPath || ".", "server.json");
-    if(!existsSync(p)) return { content:[{type:"text" as const, text:`No server.json at ${p}`}], isError:true };
-    try { const j=JSON.parse(readFileSync(p,"utf-8")); const mods=j.mods||j.addons||[]; return { content:[{type:"text" as const, text:`**Server mods (${mods.length}):**\n`+mods.map((m:unknown)=>`- \`${JSON.stringify(m)}\``).join("\n")}] }; } catch(e){ return { content:[{type:"text" as const, text:String(e)}], isError:true }; }
-  });
-
-  server.registerTool("server_health_probe", {
-    description: "Probe dedicated server health via A2S query (offline check of server.json).",
-    inputSchema: { host: z.string().default("127.0.0.1").describe("Server host"), port: z.number().default(2001).describe("A2S port") }
-  }, async ({ host, port }) => {
-    return { content:[{type:"text" as const, text:`**Health probe:** Would query ${host}:${port} via A2S (requires running server). Config at ${config.projectPath || "no project"} — check server.json.`}] };
+    if (!existsSync(p)) {
+      return {
+        content: [
+          {
+            type: "text" as const,
+            text:
+              `No server.json at \`${p}\`.\n\n` +
+              `Generate one with \`server_config\`, or pass \`serverJsonPath\` to an existing file.`,
+          },
+        ],
+        isError: true,
+      };
+    }
+    try {
+      const j = JSON.parse(readFileSync(p, "utf-8"));
+      const mods = j.mods || j.addons || [];
+      const scen = j.mission || j.scenario || "(not set)";
+      const lines = [
+        `**Server config:** \`${p}\``,
+        `- **Mods/addons:** ${Array.isArray(mods) ? mods.length : "unknown"}`,
+        `- **Mission:** ${scen}`,
+        `- **Max players:** ${j.maxPlayers ?? j.maxplayers ?? "(not set)"}`,
+        `- **Visible in browser:** ${j.visible ?? "(not set)"}`,
+        `- **Password:** ${j.password ? "yes" : "no"}`,
+      ];
+      if (Array.isArray(mods) && mods.length) {
+        lines.push("", "**Entries:**");
+        for (const m of mods) lines.push(`- \`${JSON.stringify(m)}\``);
+      }
+      return { content: [{ type: "text" as const, text: lines.join("\n") }] };
+    } catch (e) {
+      return {
+        content: [{ type: "text" as const, text: `Could not parse \`${p}\`: ${e instanceof Error ? e.message : String(e)}` }],
+        isError: true,
+      };
+    }
   });
 }

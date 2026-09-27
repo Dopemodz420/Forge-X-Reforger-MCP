@@ -5,6 +5,7 @@ import { join, extname, relative, basename } from "node:path";
 import type { Config } from "../config.js";
 import { validateProjectPath } from "../utils/safe-path.js";
 import { PakVirtualFS } from "../pak/vfs.js";
+import { buildGuidIndex } from "./asset-search.js";
 
 function walk(dir: string, cb: (full: string, rel: string) => void, base = dir) {
   let entries; try { entries = readdirSync(dir, { withFileTypes: true }); } catch { return; }
@@ -28,6 +29,38 @@ function collectGuids(content: string): string[] {
   return out;
 }
 
+/**
+ * Split GUIDs into definitions and references.
+ *
+ * Enfusion text distinguishes them structurally (see a base-game prefab):
+ *   ID "665097CC918BD3CF"                 <- definition: the resource's own id
+ *   MeshObject "{665097CCBF94201B}" {     <- definition: the component resource
+ *   Object "{E21F21E29839DDF2}system/.../Camera.xob"  <- reference: id + path
+ *
+ * So a braced GUID *followed by a path* is a reference; everything else defines.
+ * Conflating the two makes a dangling reference look "defined" and hides real breakage.
+ */
+function classifyGuids(content: string): { defined: Set<string>; referenced: Set<string> } {
+  const defined = new Set<string>();
+  const referenced = new Set<string>();
+
+  // ID "GUID" / GUID "GUID" — the resource's own identity.
+  for (const m of content.matchAll(/\b(?:ID|GUID)\s+"([0-9A-Fa-f]{16})"/g)) {
+    defined.add(m[1].toUpperCase());
+  }
+
+  // Braced GUID, capturing whatever follows the closing brace.
+  for (const m of content.matchAll(/\{([0-9A-Fa-f]{16})\}([^\s"{}]*)/g)) {
+    const guid = m[1].toUpperCase();
+    const suffix = m[2] ?? "";
+    // A trailing path (contains a separator or an extension) makes it a reference.
+    if (suffix && /[./]/.test(suffix)) referenced.add(guid);
+    else defined.add(guid);
+  }
+
+  return { defined, referenced };
+}
+
 export function registerProjectIndexExtended(server: McpServer, config: Config): void {
   server.registerTool("project_index_status", {
     description: "Index snapshot — resources, refs, files, per-project counts. Offline via PakVirtualFS + project walk. Goldwep parity.",
@@ -42,13 +75,17 @@ export function registerProjectIndexExtended(server: McpServer, config: Config):
       if (e===".et") et++; else if (e===".c") c++; else if (e===".conf") conf++; else if (e===".layout") layout++;
       try { collectGuids(readFileSync(full,"utf-8")).forEach(g=>guids.add(g)); } catch {}
     });
-    let pakFiles=0;
-    try { const vfs=PakVirtualFS.get(config.gamePath); if (vfs) pakFiles = (vfs as unknown as { size?: number }).size || 0; } catch {}
+    let pakFiles: number | null = null;
+    try {
+      const vfs = PakVirtualFS.get(config.gamePath);
+      // PakVirtualFS exposes `fileCount`, not `size`.
+      if (vfs) pakFiles = vfs.fileCount;
+    } catch {}
     const lines = [
       `## Index: ${base}`,
       `- **Files:** ${files} (.c ${c}, .et ${et}, .conf ${conf}, .layout ${layout})`,
       `- **Project GUID refs:** ${guids.size} unique`,
-      `- **Pak VFS:** ${pakFiles || "ok"}`,
+      `- **Base game files indexed:** ${pakFiles === null ? "unavailable (no VFS)" : pakFiles.toLocaleString()}`,
     ];
     return { content: [{ type: "text" as const, text: lines.join("\n") }] };
   });
@@ -95,7 +132,10 @@ export function registerProjectIndexExtended(server: McpServer, config: Config):
   });
 
   server.registerTool("find_broken_refs", {
-    description: "Find GUID references to non-existent resources (ship-blocker). Scans project .et/.conf/.c for {GUID} and checks existence in project + base game.",
+    description:
+      "Find GUID references in the project that resolve to nothing (ship-blocker). Scans .et/.conf/.c/.layout " +
+      "for {GUID} refs and checks each one against files in the project AND the indexed base game (pak/export). " +
+      "Only reports a GUID as broken when it is absent from both.",
     inputSchema: {
       projectPath: z.string().optional().describe("Mod project directory"),
       limit: z.number().min(1).max(200).default(50).describe("Max broken to show"),
@@ -103,34 +143,87 @@ export function registerProjectIndexExtended(server: McpServer, config: Config):
   }, async ({ projectPath, limit }) => {
     const base = projectPath || config.projectPath;
     if (!base || !existsSync(base)) return { content: [{ type: "text" as const, text: "No project path." }], isError: true };
-    const vfs = (()=>{ try { return PakVirtualFS.get(config.gamePath); } catch { return null; } })();
-    const broken: string[] = [];
+
+    // Collect the set of GUIDs the base game knows about.
+    //
+    // Two sources, cheapest first:
+    //   1. buildGuidIndex() — mines GUIDs out of entity catalogs and UI references,
+    //      the same index asset_search uses. Reliable and already cached.
+    //   2. A bounded sweep of base-game scripts, which reference resource GUIDs as
+    //      [Attribute(defvalue: "{GUID}...")] constants.
+    //
+    // A full 222k-file walk is deliberately avoided: it is slow and still misses
+    // GUIDs that only ever appear inside binary .xob payloads.
+    const baseGameGuids = new Set<string>();
+    let baseGameScanned = false;
+    let baseGameSource = "";
+    try {
+      const vfs = PakVirtualFS.get(config.gamePath);
+      if (vfs) {
+        const paths = vfs.allFilePaths();
+        const { guidMap } = buildGuidIndex(config.gamePath, vfs, paths);
+        for (const g of guidMap.values()) baseGameGuids.add(g.toUpperCase());
+        baseGameSource = `entity catalogs + UI references (${guidMap.size} entries)`;
+
+        // Supplement with GUIDs declared in scripts — covers component resources
+        // (e.g. MeshObject) whose GUID is not tied to a catalogued path.
+        let scriptHits = 0;
+        for (const p of paths) {
+          if (!p.toLowerCase().endsWith(".c")) continue;
+          try {
+            const buf = vfs.readFile(p);
+            const text = typeof buf === "string" ? buf : buf?.toString("utf-8") || "";
+            for (const g of text.match(/\b[0-9A-Fa-f]{16}\b/g) || []) {
+              const up = g.toUpperCase();
+              if (!baseGameGuids.has(up)) { baseGameGuids.add(up); scriptHits++; }
+            }
+          } catch { /* skip */ }
+        }
+        if (scriptHits) baseGameSource += ` + scripts (+${scriptHits})`;
+        baseGameScanned = true;
+      }
+    } catch { /* leave baseGameScanned false */ }
+
+    // Project-side definitions, also indexed once.
+    const projectFiles: Array<{ rel: string; content: string; refs: Set<string> }> = [];
+    const projectDefined = new Set<string>();
     walk(base, (full, rel) => {
-      if (broken.length >= limit) return;
       try {
         const content = readFileSync(full, "utf-8");
-        for (const guid of collectGuids(content)) {
-          // Check existence: project file with guid or pak
-          let exists = false;
-          // Project check
-          walk(base, (f2) => { if (exists) return; try { if (readFileSync(f2,"utf-8").toUpperCase().includes(guid)) exists = true; } catch {} });
-          if (exists) continue;
-          // Pak check (best-effort)
-          if (vfs) {
-            try {
-              const hit = (vfs as unknown as { readFile?: (p:string)=>string }).readFile?.(`{${guid}}`);
-              if (hit) exists = true;
-            } catch {}
-            // Fallback: search few pak files via list (expensive, skip for now)
-          }
-          if (!exists) {
-            const line = content.split("\n").find(l=>l.toUpperCase().includes(guid))?.trim().slice(0,100) || "";
-            broken.push(`${rel}: {${guid}} — ${line}`);
-          }
-        }
+        const { defined, referenced } = classifyGuids(content);
+        for (const g of defined) projectDefined.add(g);
+        projectFiles.push({ rel, content, refs: referenced });
       } catch {}
     });
-    const text = broken.length ? `**Broken refs (${broken.length}):**\n`+broken.slice(0,limit).map(s=>`- \`${s}\``).join("\n") : `**No broken GUID refs found** — all {GUID} resolve in project or base game.`;
+
+    const broken: string[] = [];
+    for (const { rel, content, refs } of projectFiles) {
+      for (const guid of refs) {
+        if (projectDefined.has(guid)) continue;              // defined in-project
+        if (baseGameScanned && baseGameGuids.has(guid)) continue; // defined in base game
+        const line = content.split("\n").find((l) => l.toUpperCase().includes(guid))?.trim().slice(0, 100) || "";
+        broken.push(`${rel}: {${guid}} — ${line}`);
+        if (broken.length >= limit) break;
+      }
+      if (broken.length >= limit) break;
+    }
+
+    const notes: string[] = [];
+    if (!baseGameScanned) {
+      notes.push(
+        `_Base game GUID index unavailable, so base-game-owned GUIDs may be reported as broken. ` +
+        `Point \`gamePath\` at an Arma Reforger install for a trustworthy result._`
+      );
+    } else {
+      notes.push(`_Base game index: ${baseGameSource} → ${baseGameGuids.size} distinct GUIDs._`);
+    }
+    const shown = broken.slice(0, limit);
+    const text = shown.length
+      ? `**Broken refs (${broken.length}${broken.length >= limit ? "+" : ""}):**\n${shown.map((s) => `- \`${s}\``).join("\n")}` +
+        (broken.length > limit ? `\n…and ${broken.length - limit} more` : "") +
+        (notes.length ? `\n\n${notes.join("\n")}` : "")
+      : `**No broken GUID refs found** — every {GUID} resolves in the project or the indexed base game.` +
+        (notes.length ? `\n\n${notes.join("\n")}` : "");
     return { content: [{ type: "text" as const, text }] };
   });
 

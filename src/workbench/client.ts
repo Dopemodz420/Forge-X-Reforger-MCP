@@ -10,9 +10,10 @@
  */
 
 import { Socket } from "node:net";
-import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, writeFileSync, readFileSync } from "node:fs";
-import { join, resolve, dirname } from "node:path";
+import { existsSync, mkdirSync, copyFileSync, readdirSync, rmSync, writeFileSync, readFileSync, statSync } from "node:fs";
+import { join, resolve, dirname, extname } from "node:path";
 import { fileURLToPath } from "node:url";
+import { homedir } from "node:os";
 import { spawn, execSync } from "node:child_process";
 import { encodeRequest, decodeResponse } from "./protocol.js";
 import { logger } from "../utils/logger.js";
@@ -149,6 +150,22 @@ export class WorkbenchClient {
             // Workbench is running but our custom handler scripts aren't compiled.
             // This happens when the user opened Workbench manually, or when handlers
             // were cleaned up but Workbench kept running.
+            //
+            // Only attempt recovery for our own handler classes. A built-in function
+            // that Workbench does not expose (e.g. GetCurrentGameProjectFile,
+            // EvaluateScript — both documented in NetApiDocs.c but not registered in
+            // every build) can never be fixed by reinstalling handlers, so attempting
+            // recovery just burns a recompile wait and pollutes the active addon.
+            if (!apiFunc.startsWith("EMCP_WB_")) {
+              throw new WorkbenchError(
+                `Workbench does not expose the built-in function "${apiFunc}". ` +
+                  `This build only registers a subset of the built-ins listed in ` +
+                  `NetApiDocs.c. Installed handlers are unaffected. Use the Forge-X ` +
+                  `tool wrapper for this capability instead of the raw built-in.`,
+                "API_ERROR"
+              );
+            }
+
             logger.info(`Handler scripts not loaded in Workbench, recovering...`);
             await this.recoverMissingHandlers();
             try {
@@ -160,13 +177,20 @@ export class WorkbenchClient {
                 retryErr instanceof WorkbenchError &&
                 /not existing|Undefined API func/i.test(retryErr.message)
               ) {
+                const active = this.detectActiveProject();
+                const activeHint = active
+                  ? ` The active Workbench project is "${active}", which is where handler ` +
+                    `scripts must live — if that is not the addon you want bridged, call ` +
+                    `wb_launch with an explicit gprojPath for your mod.`
+                  : "";
                 throw new WorkbenchError(
                   `Workbench does not expose "${apiFunc}" even after reinstalling and ` +
                     `recompiling the handler scripts. Workbench registers NET API handlers ` +
                     `when the process starts, so a handler class that is new since Workbench ` +
                     `launched will not appear until Workbench is restarted — the script ` +
                     `compiles cleanly and the other handlers keep working, so this does not ` +
-                    `look like a registration problem. Restart Workbench, then retry.`,
+                    `look like a registration problem. Restart Workbench, then retry.` +
+                    activeHint,
                   "API_ERROR"
                 );
               }
@@ -474,6 +498,104 @@ export class WorkbenchClient {
   }
 
   /**
+   * Detect which addon Workbench actually has open.
+   *
+   * Workbench only compiles the active project plus its dependencies, so handler
+   * scripts must live inside the open addon to be registered. Guessing from disk
+   * timestamps is unreliable: recovery keeps re-patching the fallback, which bumps
+   * its mtime, which makes it stay the fallback.
+   *
+   * Two file-based signals, no NET API round-trip required (the NET API is exactly
+   * what is unavailable when handlers are missing):
+   *   1. The newest per-session `console.log` under the Workbench logs folder —
+   *      Workbench logs `New game project created at: <path>` when it starts without
+   *      a project, and lists every loaded addon as `dir: '<path>'` / `gproj: '<path>'`.
+   *   2. `profile/wbSettingsDump.ini` — `LastOpenAddonLocation`.
+   *
+   * @returns Absolute path to the active addon's `.gproj`, or null if undetectable.
+   */
+  private detectActiveProject(): string | null {
+    const home = homedir();
+    const wbProfile = join(home, "Documents", "My Games", "ArmaReforgerWorkbench");
+
+    // Prefer Workbench's own logs — they reflect the current session.
+    try {
+      const logsDir = join(wbProfile, "logs");
+      if (existsSync(logsDir)) {
+        const sessions = readdirSync(logsDir, { withFileTypes: true })
+          .filter((e) => e.isDirectory())
+          .map((e) => join(logsDir, e.name))
+          .filter((p) => existsSync(join(p, "console.log")))
+          .sort(
+            (a, b) =>
+              (statSync(b, { throwIfNoEntry: false })?.mtimeMs ?? 0) -
+              (statSync(a, { throwIfNoEntry: false })?.mtimeMs ?? 0)
+          );
+
+        const baseGameMarkers = ["\\steamapps\\common\\Arma Reforger", "Reforger Tools", "ArmaReforgerWorkbench\\addons\\core"];
+        let addonDirs: string[] = [];
+        for (const session of sessions.slice(0, 3)) {
+          const text = readFileSync(join(session, "console.log"), "utf-8");
+          addonDirs = [...text.matchAll(/(?:dir|gproj):\s*'([^']+)'/g)]
+            .map((m) => m[1])
+            // Normalise the 8.3 short names Workbench sometimes logs (NEWENF~1).
+            .filter((p) => !baseGameMarkers.some((mk) => p.includes(mk)));
+          if (addonDirs.length) break;
+        }
+
+        // A freshly created project lives directly under the Workbench addons dir and
+        // is not what the user is editing — prefer any other real addon.
+        const realAddon = addonDirs.find(
+          (p) => !p.replace(/\/$/, "").toLowerCase().endsWith("\\addons")
+        );
+        if (realAddon) {
+          const gproj = this.findGprojInDir(realAddon);
+          if (gproj) return gproj;
+        }
+      }
+    } catch {
+      // fall through to the ini-based signal
+    }
+
+    try {
+      const ini = join(wbProfile, "profile", "wbSettingsDump.ini");
+      if (existsSync(ini)) {
+        const m = readFileSync(ini, "utf-8").match(/^LastOpenAddonLocation=(.+)$/m);
+        const raw = m?.[1]?.trim();
+        if (raw && existsSync(raw)) return raw;
+      }
+    } catch {
+      // ignore
+    }
+
+    return null;
+  }
+
+  /** Resolve the `.gproj` inside an addon directory (accepts a dir or a gproj path). */
+  private findGprojInDir(dir: string): string | null {
+    try {
+      if (existsSync(dir) && extname(dir).toLowerCase() === ".gproj") return dir;
+      if (!existsSync(dir)) return null;
+      const direct = readdirSync(dir, { withFileTypes: true }).find(
+        (e) => !e.isDirectory() && e.name.toLowerCase().endsWith(".gproj")
+      );
+      if (direct) return join(dir, direct.name);
+      // One level of nesting (e.g. "Kavora Island/KavoraIsland/KavoraIsland.gproj").
+      for (const e of readdirSync(dir, { withFileTypes: true })) {
+        if (!e.isDirectory()) continue;
+        const nested = join(dir, e.name);
+        const g = readdirSync(nested, { withFileTypes: true }).find(
+          (x) => !x.isDirectory() && x.name.toLowerCase().endsWith(".gproj")
+        );
+        if (g) return join(nested, g.name);
+      }
+    } catch {
+      // ignore
+    }
+    return null;
+  }
+
+  /**
    * Recover from "not existing Net API function" errors.
    * Workbench is running but our custom handler scripts aren't compiled.
    * Installs handlers into the mod directory and waits for Workbench to
@@ -487,9 +609,15 @@ export class WorkbenchClient {
       throw new WorkbenchError("No config provided — cannot recover handlers.", "LAUNCH_FAILED");
     }
 
-    // Inject into the currently-open mod — respect explicit lastProject/defaultMod, not just alphabetical fallback.
-    // Priority: lastProject (user's last wb_launch) > findFallbackGproj (most-recent real mod)
-    const recoveryGproj = loadLastProject() || this.findFallbackGproj();
+    // Inject into the addon Workbench actually has open, so the recompile can
+    // register the handlers. Falls back to lastProject/defaultMod, then to the
+    // most-recent real mod on disk.
+    // Priority: active project > lastProject > findFallbackGproj.
+    const active = this.detectActiveProject();
+    const recoveryGproj = active || loadLastProject() || this.findFallbackGproj();
+    if (active) {
+      logger.info(`Detected active Workbench project: ${active}`);
+    }
     if (recoveryGproj) {
       // Auto-patch missing Modules { "scripts" } so handlers can compile in the user's real mod
       // instead of silently falling back to the standalone EnfusionMCP addon.

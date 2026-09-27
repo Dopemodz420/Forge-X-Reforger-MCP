@@ -17,8 +17,10 @@ export function registerWbResources(server: McpServer, client: WorkbenchClient):
           ),
         path: z
           .string()
+          .optional()
           .describe(
-            "Resource path or path prefix. Required for all actions. For browse: use a prefix like 'Prefabs/Characters/' to find matching resources."
+            "Resource path or path prefix. Required for register, rebuild, open, getInfo and browse. " +
+              "For browse: use a prefix like 'Prefabs/Characters/' or an exact path like '$Addon:Prefabs'."
           ),
         buildRuntime: z
           .boolean()
@@ -28,11 +30,32 @@ export function registerWbResources(server: McpServer, client: WorkbenchClient):
     },
     async ({ action, path, buildRuntime }) => {
       try {
+        // Every action needs a target — reject clearly instead of letting the
+        // MCP schema layer fail with an opaque validation error.
+        if (!path || path.trim() === "") {
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `\`path\` is required for action \`${action}\`.` +
+                  ` Provide a resource path (e.g. "Prefabs/Characters/Soldier.et") or a ` +
+                  `path prefix (e.g. "$MyAddon:Prefabs").` +
+                  formatConnectionStatus(client),
+              },
+            ],
+            isError: true,
+          };
+        }
+
         // Mutating actions require edit mode
         if (action === "register" || action === "rebuild") {
           const modeErr = requireEditMode(client, `${action} resource`);
           if (modeErr) {
-            return { content: [{ type: "text" as const, text: modeErr + formatConnectionStatus(client) }] };
+            return {
+              content: [{ type: "text" as const, text: modeErr + formatConnectionStatus(client) }],
+              isError: true,
+            };
           }
         }
 

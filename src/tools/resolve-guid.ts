@@ -56,29 +56,50 @@ export function registerResolveGuid(server: McpServer, config: Config): void {
     if (foundDef) lines.push(`**Project definition:** \`${foundDef}\``);
     else lines.push(`**Project definition:** _not found in project_ — likely base game`);
 
-    // 2. Base game search via PakVirtualFS
+    // 2. Base game search via PakVirtualFS.
+    // PakVirtualFS exposes listDir()/readFile()/searchFiles()/fileCount — there is no
+    // listFiles(), so walk directories explicitly. Extensions are the ones that can
+    // legitimately *define* a GUID: prefabs, configs, layouts, imagesets, materials.
     try {
       const vfs = PakVirtualFS.get(config.gamePath);
       if (vfs) {
-        const guidLower = raw.toLowerCase();
         const hits: string[] = [];
-        // PakVirtualFS doesn't have GUID index, so search via game_search-like scan over loose+VFS file list
-        // Fallback: scan a sample of known game files via vfs.listFiles if available
-        const files = (vfs as unknown as { listFiles?: () => string[] }).listFiles?.() || [];
-        for (const f of files) {
-          if (hits.length >= limit) break;
+        const wanted = new Set([".et", ".conf", ".layout", ".imageset", ".emat", ".xob", ".c"]);
+        const walk = (dir: string, depth: number): void => {
+          if (hits.length >= limit || depth > 6) return;
+          let entries: ReturnType<typeof vfs.listDir>;
           try {
-            const content = vfs.readFile(f) as unknown as string | Buffer;
-            const text = typeof content === "string" ? content : content?.toString("utf-8") || "";
-            if (text.toUpperCase().includes(raw)) hits.push(f);
-          } catch {}
-        }
+            entries = vfs.listDir(dir);
+          } catch {
+            return;
+          }
+          for (const e of entries) {
+            if (hits.length >= limit) return;
+            const child = dir ? `${dir}/${e.name}` : e.name;
+            if (e.isDirectory) {
+              walk(child, depth + 1);
+            } else if (wanted.has(extname(e.name).toLowerCase())) {
+              try {
+                const buf = vfs.readFile(child);
+                const text = typeof buf === "string" ? buf : buf?.toString("utf-8") || "";
+                if (text.toUpperCase().includes(raw)) hits.push(child);
+              } catch {
+                // unreadable entry — skip
+              }
+            }
+          }
+        };
+        walk("", 0);
         if (hits.length) {
-          lines.push(`\n**Base game hits (${hits.length}):**`);
+          lines.push(`\n**Base game definitions (${hits.length}${hits.length >= limit ? "+" : ""}):**`);
           for (const h of hits.slice(0, limit)) lines.push(`- \`${h}\``);
+        } else {
+          lines.push(`\n**Base game definitions:** none found in the indexed pak/export data.`);
         }
       }
-    } catch {}
+    } catch (e) {
+      lines.push(`\n**Base game search skipped:** ${e instanceof Error ? e.message : String(e)}`);
+    }
 
     // 3. References in project (incoming)
     const refs: string[] = [];
