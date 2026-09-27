@@ -1,10 +1,11 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import { readdirSync, existsSync, statSync, readFileSync } from "node:fs";
-import { join, resolve } from "node:path";
+import { join, dirname } from "node:path";
 import { homedir } from "node:os";
 import type { Config } from "../config.js";
 import type { WorkbenchClient } from "../workbench/client.js";
+import { registerProjectIndexExtended } from "./project-index-extended.js";
 
 export function registerLogsWorld(server: McpServer, config: Config, client: WorkbenchClient): void {
   server.registerTool("logs_list", {
@@ -65,10 +66,66 @@ export function registerLogsWorld(server: McpServer, config: Config, client: Wor
   });
 
   server.registerTool("world_validate_refs", {
-    description: "Validate world entity refs vs project + base game (wraps find_broken_refs for current world).",
-    inputSchema: { projectPath: z.string().optional().describe("Mod project directory") }
-  }, async ({ projectPath }) => {
-    // Reuse find_broken_refs logic via direct call — delegate
-    return { content: [{ type: "text" as const, text: `Use find_broken_refs with projectPath "${projectPath || config.projectPath}" — world_validate_refs is alias for current world.` }] };
+    description:
+      "Validate the GUID references used by the world that Workbench currently has open. " +
+      "Resolves the active project via the bridge, then scans that addon's world/layer files for " +
+      "{GUID} references and reports any that resolve to nothing in the addon or the base game. " +
+      "Run this before publishing a scenario to catch dangling prefab references.",
+    inputSchema: {
+      projectPath: z.string().optional().describe("Addon root to scan. Defaults to the active Workbench project."),
+      limit: z.number().min(1).max(200).default(50).describe("Max broken refs to report"),
+    }
+  }, async ({ projectPath, limit }) => {
+    // Prefer the caller's path; otherwise ask Workbench which addon is open.
+    let base = projectPath || config.projectPath;
+    let source = "config.projectPath";
+    if (!projectPath) {
+      try {
+        const info = await client.call<{ projectFile?: string }>("EMCP_WB_ProjectInfo", { action: "project" }, { timeout: 5000 });
+        if (info.projectFile) {
+          base = dirname(info.projectFile);
+          source = "active Workbench project";
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        return {
+          content: [
+            {
+              type: "text" as const,
+              text:
+                `Could not determine the active Workbench project: ${msg}\n\n` +
+                `Start Workbench (\`wb_launch\`) or pass \`projectPath\` explicitly.`,
+            },
+          ],
+          isError: true,
+        };
+      }
+    }
+
+    if (!base || !existsSync(base)) {
+      return { content: [{ type: "text" as const, text: "No project path to scan." }], isError: true };
+    }
+
+    // Reuse the ship-blocker scanner so both tools agree on what "broken" means.
+    const scanner = new Map();
+    const mock = { registerTool: (n: string, _o: unknown, f: unknown) => scanner.set(n, f) };
+    registerProjectIndexExtended(mock as never, { ...config, projectPath: base });
+    const findBroken = scanner.get("find_broken_refs") as
+      | ((a: { projectPath?: string; limit?: number }) => Promise<{ content: Array<{ text: string }> }>)
+      | undefined;
+    if (!findBroken) {
+      return { content: [{ type: "text" as const, text: "find_broken_refs unavailable." }], isError: true };
+    }
+
+    const res = await findBroken({ projectPath: base, limit });
+    const body = res.content.map((c) => c.text).join("\n");
+    return {
+      content: [
+        {
+          type: "text" as const,
+          text: `**World ref validation** — scanned \`${base}\` (source: ${source})\n\n${body}`,
+        },
+      ],
+    };
   });
 }

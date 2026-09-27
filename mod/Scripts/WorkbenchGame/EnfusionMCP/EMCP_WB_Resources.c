@@ -120,11 +120,43 @@ class EMCP_WB_Resources : NetApiHandler
 		}
 		else if (req.action == "browse")
 		{
-			// Workbench.SearchResources requires a WorkbenchSearchResourcesCallback subclass
-			// whose exact callback method signature is not publicly documented.
-			// Until the callback pattern is confirmed at runtime, return a helpful error.
-			resp.status = "error";
-			resp.message = "browse action not yet implemented: Workbench.SearchResources requires a WorkbenchSearchResourcesCallback subclass. Use wb_open_resource or project_browse instead.";
+			// Delegate to the resource database. Workbench.SearchResources() is
+			// [Obsolete] (GameLib/generated/WorkbenchAPI/Workbench.c) — the supported
+			// entry point is ResourceDatabase.SearchResources() with a
+			// SearchResourcesFilter, whose callback is a typedef func (not a class).
+			array<ResourceName> found = {};
+
+			SearchResourcesFilter filter = new SearchResourcesFilter();
+			filter.rootPath = req.path;
+			filter.recursive = true;
+
+			ResourceDatabase.SearchResources(filter, found.Insert);
+
+			int total = found.Count();
+			resp.entryCount = total;
+
+			// Keep the response small — the database can hold six figures of entries.
+			int send = total;
+			if (total > 200)
+				send = 200;
+
+			for (int i = 0; i < send; i++)
+			{
+				ResourceName rn = found[i];
+				EMCP_WB_ResourceEntry e = new EMCP_WB_ResourceEntry();
+				e.m_sName = rn;
+				e.m_sPath = rn.GetPath();
+				e.m_sType = "";
+				resp.m_aEntries.Insert(e);
+			}
+
+			resp.status = "ok";
+			if (total == 0)
+				resp.message = "No resources found under: " + req.path;
+			else if (total > send)
+				resp.message = string.Format("Found %1 resources under %2, showing first %3", total, req.path, send);
+			else
+				resp.message = string.Format("Found %1 resources under %2", total, req.path);
 		}
 		else
 		{
