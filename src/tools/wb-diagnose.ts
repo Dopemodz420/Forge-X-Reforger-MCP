@@ -32,6 +32,19 @@ export function registerWbDiagnose(server: McpServer, client: WorkbenchClient): 
         lines.push("- **Project Path:** not configured");
       }
       lines.push(`- **Default Mod:** ${r.defaultMod ?? "(not set)"}`);
+      if (r.activeProject) {
+        lines.push(`- **Active Addon (from Workbench load log):** \`${r.activeProject}\``);
+        if (r.activeProject !== r.defaultMod) {
+          const activeDir = r.activeProject.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
+          const hasHandlers = r.installedMods.some((m) => activeDir.startsWith(m.modDir.replace(/\\/g, "/").toLowerCase()) || m.modDir.replace(/\\/g, "/").toLowerCase().startsWith(activeDir));
+          lines.push(
+            `  - ⚠ Handlers ${hasHandlers ? "are" : "are **not**"} installed in this addon. ` +
+              `Workbench only compiles the active project + dependencies, so this is where they must live.`
+          );
+        }
+      } else {
+        lines.push("- **Active Addon:** could not determine from the Workbench log");
+      }
 
       // --- Handler Scripts ---
       lines.push("\n### Handler Scripts");
@@ -111,6 +124,20 @@ export function registerWbDiagnose(server: McpServer, client: WorkbenchClient): 
           `Workbench cannot compile the handlers. Add \`Modules { "scripts" }\` to: ` +
           modsWithoutModules.map(m => `\`${m.modDir}\``).join(", ")
         );
+      }
+      if (r.activeProject && r.installedMods.length > 0) {
+        const activeDir = r.activeProject.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
+        const activeHasHandlers = r.installedMods.some((m) => {
+          const d = m.modDir.replace(/\\/g, "/").toLowerCase();
+          return d === activeDir || d.startsWith(activeDir) || activeDir.startsWith(d);
+        });
+        if (!activeHasHandlers) {
+          problems.push(
+            `The active Workbench addon (\`${r.activeProject}\`) has no handler scripts, so the bridge ` +
+            `cannot register even though handlers exist in another addon. Call wb_launch with an explicit ` +
+            `gprojPath pointing at the addon you want bridged.`
+          );
+        }
       }
 
       if (problems.length > 0) {

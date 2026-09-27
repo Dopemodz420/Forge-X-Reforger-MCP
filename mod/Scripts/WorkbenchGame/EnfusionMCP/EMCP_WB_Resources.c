@@ -20,13 +20,6 @@ class EMCP_WB_ResourcesRequest : JsonApiStruct
 	}
 }
 
-class EMCP_WB_ResourceEntry
-{
-	string m_sName;
-	string m_sPath;
-	string m_sType;
-}
-
 class EMCP_WB_ResourcesResponse : JsonApiStruct
 {
 	string status;
@@ -34,34 +27,14 @@ class EMCP_WB_ResourcesResponse : JsonApiStruct
 	string action;
 	string path;
 	int entryCount;
-	ref array<ref EMCP_WB_ResourceEntry> m_aEntries;
+	bool truncated;
+	// Named without the m_ prefix so RegAll() serialises it as "entries", matching
+	// EMCP_WB_ProjectInfo — an m_-prefixed member is not emitted.
+	ref array<ResourceName> entries = {};
 
 	void EMCP_WB_ResourcesResponse()
 	{
-		RegV("status");
-		RegV("message");
-		RegV("action");
-		RegV("path");
-		RegV("entryCount");
-		m_aEntries = {};
-	}
-
-	override void OnPack()
-	{
-		if (m_aEntries.Count() > 0)
-		{
-			StartArray("entries");
-			for (int i = 0; i < m_aEntries.Count(); i++)
-			{
-				EMCP_WB_ResourceEntry e = m_aEntries[i];
-				StartObject("");
-				StoreString("name", e.m_sName);
-				StoreString("path", e.m_sPath);
-				StoreString("type", e.m_sType);
-				EndObject();
-			}
-			EndArray();
-		}
+		RegAll();
 	}
 }
 
@@ -138,16 +111,14 @@ class EMCP_WB_Resources : NetApiHandler
 			// Keep the response small — the database can hold six figures of entries.
 			int send = total;
 			if (total > 200)
+			{
 				send = 200;
+				resp.truncated = true;
+			}
 
 			for (int i = 0; i < send; i++)
 			{
-				ResourceName rn = found[i];
-				EMCP_WB_ResourceEntry e = new EMCP_WB_ResourceEntry();
-				e.m_sName = rn;
-				e.m_sPath = rn.GetPath();
-				e.m_sType = "";
-				resp.m_aEntries.Insert(e);
+				resp.entries.Insert(found[i]);
 			}
 
 			resp.status = "ok";

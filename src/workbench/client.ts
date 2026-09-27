@@ -51,6 +51,12 @@ export interface DiagnosticReport {
   /** Result of the NET API probe. */
   netApi: "up_with_handlers" | "up_no_handlers" | "refused" | "timeout" | "error";
   netApiError?: string;
+  /**
+   * Addon Workbench actually has open, resolved from its load log (not the NET API,
+   * which is unavailable when handlers are missing). `Workbench.GetCurrentGameProjectFile()`
+   * cannot be used for this: it reports the base Arma Reforger data addon, not the mod.
+   */
+  activeProject?: string | null;
 }
 
 export interface WorkbenchState {
@@ -454,6 +460,7 @@ export class WorkbenchClient {
       installedMods,
       netApi,
       netApiError,
+      activeProject: this.detectActiveProject(),
     };
   }
 

@@ -87,8 +87,9 @@ export function registerWbExtended(server: McpServer, client: WorkbenchClient): 
       description:
         "Report the game project Workbench currently has open (absolute .gproj path) and the " +
         "Workbench working directory. Backed by Workbench.GetCurrentGameProjectFile() and " +
-        "Workbench.GetCwd() via the EMCP_WB_ProjectInfo handler. Use this to confirm which addon " +
-        "is active before placing entities or editing resources.",
+        "Workbench.GetCwd() via the EMCP_WB_ProjectInfo handler. Note this is the *game* project " +
+        "(the base Arma Reforger data addon), not the mod you have open — to find the open addon, " +
+        "run `wb_diagnose`, which parses Workbench's own load log.",
       inputSchema: {},
     },
     async () => {

@@ -76,29 +76,49 @@ export function registerLogsWorld(server: McpServer, config: Config, client: Wor
       limit: z.number().min(1).max(200).default(50).describe("Max broken refs to report"),
     }
   }, async ({ projectPath, limit }) => {
-    // Prefer the caller's path; otherwise ask Workbench which addon is open.
+    // Prefer the caller's path; otherwise resolve the mod Workbench actually has open.
+    //
+    // NOTE: Workbench.GetCurrentGameProjectFile() reports the *game* project
+    // (base ArmaReforger.gproj), not the user's addon, so it cannot be used to
+    // find the mod. The client's log-based detection returns the open addon.
     let base = projectPath || config.projectPath;
     let source = "config.projectPath";
     if (!projectPath) {
-      try {
-        const info = await client.call<{ projectFile?: string }>("EMCP_WB_ProjectInfo", { action: "project" }, { timeout: 5000 });
-        if (info.projectFile) {
-          base = dirname(info.projectFile);
-          source = "active Workbench project";
+      const active = (client as unknown as { detectActiveProject?: () => string | null }).detectActiveProject?.();
+      if (active) {
+        base = dirname(active);
+        source = "active Workbench addon";
+      } else {
+        // Cross-check the bridge so the user gets a useful diagnostic.
+        try {
+          const info = await client.call<{ projectFile?: string }>("EMCP_WB_ProjectInfo", { action: "project" }, { timeout: 5000 });
+          if (info.projectFile) {
+            return {
+              content: [
+                {
+                  type: "text" as const,
+                  text:
+                    `Workbench reports its game project as \`${info.projectFile}\`, which is the base ` +
+                    `Arma Reforger data addon — not the mod you are editing, so there is nothing ` +
+                    `world-specific to validate. Pass \`projectPath\` with your addon root to scan it.`,
+                },
+              ],
+            };
+          }
+        } catch (e) {
+          const msg = e instanceof Error ? e.message : String(e);
+          return {
+            content: [
+              {
+                type: "text" as const,
+                text:
+                  `Could not determine the active Workbench addon: ${msg}\n\n` +
+                  `Start Workbench (\`wb_launch\`) or pass \`projectPath\` explicitly.`,
+              },
+            ],
+            isError: true,
+          };
         }
-      } catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        return {
-          content: [
-            {
-              type: "text" as const,
-              text:
-                `Could not determine the active Workbench project: ${msg}\n\n` +
-                `Start Workbench (\`wb_launch\`) or pass \`projectPath\` explicitly.`,
-            },
-          ],
-          isError: true,
-        };
       }
     }
 

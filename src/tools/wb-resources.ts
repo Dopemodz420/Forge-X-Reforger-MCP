@@ -61,19 +61,23 @@ export function registerWbResources(server: McpServer, client: WorkbenchClient):
 
         if (action === "browse") {
           const result = await client.call<Record<string, unknown>>("EMCP_WB_Resources", { action, path });
-          const entries = Array.isArray(result.entries) ? result.entries : [];
+          // entries are ResourceName strings ("{GUID}some/path.et")
+          const entries = Array.isArray(result.entries) ? (result.entries as string[]) : [];
           const total = typeof result.entryCount === "number" ? result.entryCount : entries.length;
 
           if (entries.length === 0) {
             return {
-              content: [{ type: "text" as const, text: `**No resources found** matching \`${path}\`\n\n${result.message || ""}${formatConnectionStatus(client)}` }],
+              content: [
+                {
+                  type: "text" as const,
+                  text: `**No resources found** matching \`${path}\`\n\n${result.message || ""}${formatConnectionStatus(client)}`,
+                },
+              ],
             };
           }
-          const lines = [`**Resources matching \`${path}\`** (${entries.length} of ${total})\n`];
-          for (const entry of entries) {
-            const e = entry as Record<string, unknown>;
-            lines.push(`- \`${e.path}\` *(${e.type || "?"})*`);
-          }
+
+          const lines = [`**Resources matching \`${path}\`** (${result.message || `${entries.length} found`})\n`];
+          for (const e of entries) lines.push(`- \`${e}\``);
           if (total > entries.length) {
             lines.push(`\n*${total - entries.length} more not shown (cap 200).*`);
           }
