@@ -34,14 +34,20 @@ export function registerWbDiagnose(server: McpServer, client: WorkbenchClient): 
       lines.push(`- **Default Mod:** ${r.defaultMod ?? "(not set)"}`);
       if (r.activeProject) {
         lines.push(`- **Active Addon (from Workbench load log):** \`${r.activeProject}\``);
-        if (r.activeProject !== r.defaultMod) {
-          const activeDir = r.activeProject.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
-          const hasHandlers = r.installedMods.some((m) => activeDir.startsWith(m.modDir.replace(/\\/g, "/").toLowerCase()) || m.modDir.replace(/\\/g, "/").toLowerCase().startsWith(activeDir));
-          lines.push(
-            `  - ⚠ Handlers ${hasHandlers ? "are" : "are **not**"} installed in this addon. ` +
-              `Workbench only compiles the active project + dependencies, so this is where they must live.`
-          );
-        }
+        const activeDir = r.activeProject.replace(/\\/g, "/").replace(/\/[^/]+$/, "").toLowerCase();
+        const activeHasHandlers = r.installedMods.some((m) => {
+          const d = m.modDir.replace(/\\/g, "/").toLowerCase();
+          return d === activeDir || d.startsWith(activeDir) || activeDir.startsWith(d);
+        });
+        // Only warn on the failure case — a warning shown on the happy path trains
+        // the reader to ignore it.
+        lines.push(
+          activeHasHandlers
+            ? `  - ✓ Handler scripts are installed here, so the bridge can register.`
+            : `  - ⚠ No handler scripts in the active addon. Workbench only compiles the ` +
+              `active project + dependencies, so the bridge cannot register even if handlers ` +
+              `exist in another addon. Run \`wb_launch\` with an explicit \`gprojPath\`.`
+        );
       } else {
         lines.push("- **Active Addon:** could not determine from the Workbench log");
       }
